@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+
+# Project Specific
+.cache/
+sanctum/data/*.db
+sanctum/data/*.sqlite
+sanctum/output/*.pdf
+
+# OS
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,64 @@
+#!/bin/bash
+# SANCTUM — Automatic Launcher & Environment Manager
+# This script ensures the virtual environment is set up and dependencies are installed.
+
+set -e
+
+# Resolve the absolute path of the project root, even if called via a symlink
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symlink
+  DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE" # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+done
+SCRIPT_DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+
+VENV_DIR="$SCRIPT_DIR/.venv"
+REQ_FILE="$SCRIPT_DIR/sanctum/requirements.txt"
+
+# --- Internal Install Command ---
+if [ "$1" == "setup" ]; then
+    echo "🔧 Setting up Sanctum for global access..."
+    
+    # 1. Create venv and install deps
+    if [ ! -d "$VENV_DIR" ]; then
+        python3 -m venv "$VENV_DIR"
+        source "$VENV_DIR/bin/activate"
+        pip install -q --upgrade pip
+        pip install -q -r "$REQ_FILE"
+    fi
+    
+    # 2. Try to symlink to /usr/local/bin
+    TARGET_BIN="/usr/local/bin/sanctum"
+    if [ -w "/usr/local/bin" ]; then
+        ln -sf "$SCRIPT_DIR/sanctum" "$TARGET_BIN"
+        echo "✅ Created symlink at $TARGET_BIN"
+    else
+        echo "⚠️  /usr/local/bin is not writable. Attempting with sudo..."
+        sudo ln -sf "$SCRIPT_DIR/sanctum" "$TARGET_BIN"
+        echo "✅ Created symlink at $TARGET_BIN (via sudo)"
+    fi
+    
+    echo "🎉 Setup complete! You can now run 'sanctum' from any directory."
+    exit 0
+fi
+
+# --- Normal Execution ---
+
+# 1. Automatic Venv Creation (if not already done via setup)
+if [ ! -d "$VENV_DIR" ]; then
+    echo "🚀 First-time setup: Creating virtual environment..."
+    python3 -m venv "$VENV_DIR"
+    source "$VENV_DIR/bin/activate"
+    pip install -q --upgrade pip
+    pip install -q -r "$REQ_FILE"
+fi
+
+# 2. Activate environment
+source "$VENV_DIR/bin/activate"
+
+# 3. Add sanctum to PYTHONPATH so internal imports work
+export PYTHONPATH="$SCRIPT_DIR/sanctum:$PYTHONPATH"
+
+# 4. Execute the main program with all passed arguments
+exec python3 "$SCRIPT_DIR/sanctum/sanctum.py" "$@"

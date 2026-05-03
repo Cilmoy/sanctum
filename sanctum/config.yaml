@@ -1,0 +1,132 @@
+# ── UNIVERSE ──
+universe:
+  source: "sp500"               # all_us (default), sp500, nasdaq100, or custom
+  custom_tickers: [TSM,GOOG,INTC,NVDA,AVGO,AAPL,PANW,MSFT]             # ["GOOG", "NVDA", "TSM", ...]
+  min_market_cap_B: 2
+  min_avg_volume_M: 1
+  exclude_sectors: []
+  include_sectors: []            # e.g. ["Technology", "Healthcare"] — empty means all sectors
+
+# ── WACC ──
+wacc:
+  risk_free_rate: 0.043          # 10Y UST yield
+  equity_risk_premium: 0.055     # Damodaran implied ERP
+  small_cap_premium: 0.025       # Duff & Phelps
+  small_cap_threshold_B: 5
+  cost_of_debt_fallback: 0.055   # used only when interest/debt unavailable
+  marginal_tax_rate: 0.21
+
+# ── DCF ──
+dcf:
+  projection_years: 7
+  terminal_growth_rate: 0.03
+  growth_override: {}            # {"NVDA": [0.40, 0.28, 0.20, 0.15, 0.10, 0.08, 0.06]}
+  margin_override: {}
+
+# ── MONTE CARLO ──
+montecarlo:
+  n_simulations: 10000
+  n_simulations_screen: 1000     # used during bulk screen for speed
+  seed: 42
+  revenue_vol: 0.08
+  growth_vol: 0.06
+  margin_vol: 0.03
+  terminal_growth_vol: 0.005
+  antithetic_variates: true
+
+# ── BAYESIAN ──
+bayesian:
+  prior:
+    bull: 0.25
+    base: 0.50
+    bear: 0.25
+  likelihood_clip: [0.05, 0.95]  # prevent degenerate posteriors
+  evidence_factors:
+    revenue_growth:
+      thresholds: [0.20, 0.05, 0.0]
+      likelihoods:
+        high:     [0.80, 0.50, 0.30]
+        moderate: [0.60, 0.70, 0.40]
+        low:      [0.40, 0.60, 0.60]
+        decline:  [0.20, 0.40, 0.80]
+    gross_margin:
+      thresholds: [0.60, 0.40]
+      likelihoods:
+        high:     [0.75, 0.65, 0.40]
+        moderate: [0.60, 0.65, 0.55]  # rebalanced: was [0.60, 0.65, 0.50], bull/bear ratio 1.20→1.09
+        low:      [0.40, 0.55, 0.70]
+    forward_pe:
+      thresholds: [22, 35, 60]
+      likelihoods:
+        attractive: [0.80, 0.60, 0.30]
+        fair:       [0.60, 0.70, 0.50]
+        elevated:   [0.40, 0.50, 0.70]
+        extreme:    [0.30, 0.40, 0.80]
+    analyst_upside:
+      thresholds: [0.30, 0.10, 0.0]
+      likelihoods:
+        strong:   [0.80, 0.60, 0.30]
+        moderate: [0.60, 0.65, 0.55]  # rebalanced: was [0.65, 0.65, 0.45], bull/bear ratio 1.44→1.09
+        slim:     [0.50, 0.60, 0.60]
+        downside: [0.30, 0.40, 0.80]
+    earnings_surprise:
+      thresholds: [0.10, 0.0]
+      likelihoods:
+        beat:   [0.75, 0.60, 0.35]
+        inline: [0.55, 0.65, 0.55]
+        miss:   [0.30, 0.45, 0.75]
+    news_sentiment:
+      # VADER compound score thresholds: [bullish_min, bearish_max]
+      # Intentionally conservative likelihoods — news is noisy and headline-reactive.
+      # Goal is a gentle nudge, not a fundamental update.
+      thresholds: [0.15, -0.15]
+      likelihoods:
+        bullish: [0.70, 0.55, 0.30]
+        neutral: [0.50, 0.65, 0.50]
+        bearish: [0.30, 0.50, 0.70]
+
+# ── CATALYST SCORING ──
+catalyst:
+  weights:
+    earnings_acceleration: 0.30   # beat streak, magnitude, acceleration, proximity
+    smart_money: 0.25             # insider open-market buys + ownership alignment
+    analyst_revisions: 0.20       # net upgrades minus downgrades, trailing 30 days
+    price_momentum: 0.15          # price vs MA50, position in 52W range
+    short_interest: 0.10          # short % of float as squeeze amplifier
+
+# ── SENSITIVITY ──
+sensitivity:
+  revenue_delta_pct: 5
+
+# ── COMPOSITE SCORING ──
+scoring:
+  weights:
+    bayesian_upside: 0.27
+    mc_upside: 0.22
+    dcf_upside: 0.18
+    margin_trend: 0.09
+    earnings_momentum: 0.14
+    sentiment_score: 0.10
+  shortlist_threshold: 60
+
+# ── PORTFOLIO CONSTRAINTS ──
+portfolio:
+  max_positions: 15
+  min_positions: 5
+  max_cash_pct: 15
+  max_single_position_pct: 20
+  max_sector_pct: 40
+  max_semi_pct: 50
+
+# ── OUTPUT ──
+output:
+  top_n: 25
+  show_math: true
+  export_pdf: false
+  brand_name: "SANCTUM LLC"
+
+# ── CACHE ──
+cache:
+  enabled: true
+  ttl_hours: 6   # keep fresh enough for intraday re-runs without hammering yfinance
+  db_path: ".cache/sanctum.db"
