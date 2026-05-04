@@ -1,5 +1,5 @@
 import pytest
-from sanctum.sanctum import apply_overrides, build_parser
+from sanctum.main import apply_overrides, build_parser
 
 def test_apply_overrides_basic():
     config = {"a": 1, "b": {"c": 2}}

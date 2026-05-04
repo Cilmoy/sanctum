@@ -71,4 +71,4 @@ source "$VENV_DIR/bin/activate"
 export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
 
 # 4. Execute the main program with all passed arguments
-exec python3 "$SCRIPT_DIR/sanctum/sanctum.py" "$@"
+exec python3 "$SCRIPT_DIR/sanctum/main.py" "$@"

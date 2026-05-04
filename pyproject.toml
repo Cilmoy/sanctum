@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.scripts]
-sanctum = "sanctum.sanctum:main"
+sanctum = "sanctum.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
