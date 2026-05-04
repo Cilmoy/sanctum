@@ -69,11 +69,32 @@ def compute_catalyst_score(stock, config: dict) -> dict:
         "short_interest":        _score_short_interest(stock, notes),
     }
 
+    # ── Alpha Pipeline Multipliers ───────────────────────────────────────────
+    # 1. Insider Clustering (The 'Intel at $45' signal)
+    # If multiple insiders are buying while the stock is near 52W lows, 
+    # it indicates a massive fundamental mispricing.
+    if stock.insider_buys_60d and stock.insider_buys_60d >= 2:
+        price_pos = 0.5
+        if stock.current_price and stock.week_52_high and stock.week_52_low:
+            rng = stock.week_52_high - stock.week_52_low
+            if rng > 0:
+                price_pos = (stock.current_price - stock.week_52_low) / rng
+        
+        if price_pos < 0.25:
+            components["smart_money"] = min(100.0, components["smart_money"] * 1.3)
+            notes.append("ALPHA SIGNAL: Clustered insider buying near 52-week lows.")
+
     total_w = sum(float(weights.get(k, 0)) for k in components)
     if total_w > 0:
         score = sum(components[k] * float(weights.get(k, 0)) for k in components) / total_w
     else:
         score = 50.0
+
+    # 2. Volatility Squeeze Multiplier
+    # A squeeze often precedes a violent directional move.
+    if getattr(stock, "is_squeeze", False):
+        score = min(100.0, score + 12.0)
+        notes.append(f"ALPHA SIGNAL: Volatility Squeeze detected (BBW Percentile: {getattr(stock, 'squeeze_percentile', 0):.1f}%).")
 
     return {
         "catalyst_score":           round(score, 1),
@@ -90,6 +111,8 @@ def compute_catalyst_score(stock, config: dict) -> dict:
         "analyst_net_upgrades_30d": stock.analyst_net_upgrades_30d,
         "short_pct_float":          stock.short_pct_float,
         "institutional_own_pct":    stock.institutional_own_pct,
+        "is_squeeze":               getattr(stock, "is_squeeze", False),
+        "squeeze_percentile":       getattr(stock, "squeeze_percentile", 0.0),
         "notes":                    notes,
     }
 

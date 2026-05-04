@@ -31,6 +31,7 @@ _MIN_DTE = 14
 _MAX_DTE = 60
 _TARGET_DTE_LOW = 30
 _TARGET_DTE_HIGH = 45
+_EARNINGS_WARNING_DAYS = 5
 
 
 # ── Public entry points ───────────────────────────────────────────────────────
@@ -49,12 +50,11 @@ def analyze_options(stock, config: dict) -> Optional[dict]:
         return None
 
 
-def suggest_strategy(opts: dict, score: float, bull_prob: float, bear_prob: float) -> dict:
+def suggest_strategy(opts: dict, score: float, bull_prob: float, bear_prob: float, stock=None) -> dict:
     """
-    Recommend an options strategy based on model conviction and IV regime.
+    Recommend an options strategy based on model conviction, IV regime, and technical setups.
 
-    Returns dict with keys: name, rationale, legs, execution_note.
-    Each leg: {action, type, strike, note}
+    Returns dict with keys: name, rationale, legs, execution_note, plain_english_summary.
     """
     iv_regime = opts.get("iv_regime", "normal")
     atm_strike = opts.get("atm_strike", 0)
@@ -63,195 +63,170 @@ def suggest_strategy(opts: dict, score: float, bull_prob: float, bear_prob: floa
     atm_iv = opts.get("atm_iv", 0)
     dte = opts.get("dte", 30)
     expiry = opts.get("expiration", "")
+    
+    is_squeeze = getattr(stock, "is_squeeze", False) if stock else False
 
     high_iv = iv_regime == "high"
-    # Jane Street / PhD Fix: If conviction is extreme (score > 85), 
+    # Jane Street / PhD Fix: If conviction is extreme (score > 85 or < 15), 
     # don't cap upside with spreads. Buy directional OTM optionality (10-20Δ) 
     # to capture 'multi-bagger' 10x moves.
-    multi_bagger_conviction = score >= 85
+    multi_bagger_conviction = score >= 85 or score <= 15
+
+    summary = ""
+    res = {}
 
     if score >= 70:
         if multi_bagger_conviction and not high_iv:
             target_strike = call_25d or round(atm_strike * 1.10, 0)
-            return {
-                "name": "Long OTM Call (10x Potential)",
+            summary = "The model is extremely bullish and volatility is 'squeezed' or low. Buy out-of-the-money calls to capture a potential explosive move higher."
+            res = {
+                "name": "Long OTM Call (Alpha Setup)",
                 "rationale": (
-                    f"Extreme conviction (score {score:.0f}) + Low IV — "
+                    f"Extreme conviction (score {score:.0f}) + Low IV{' + Squeeze' if is_squeeze else ''} — "
                     "buying pure directional optionality to capture high-velocity move."
                 ),
                 "legs": [
                     {"action": "BUY", "type": "CALL", "strike": target_strike, "expiry": expiry, "note": "~20Δ call for leverage"},
                 ],
-                "execution_note": "Max loss = premium paid. 10x potential if catalyst hits hard. Exit at 300%+ profit."
+                "execution_note": "Target Entry: RVOL > 1.5. Stop Loss: 50% of premium. Profit Target: 300%+. Exit before 7 days to expiry."
             }
         
-        if high_iv:
+        elif high_iv:
             leg_strike = put_25d or round(atm_strike * 0.93, 0)
-            return {
+            summary = "Strong fundamental outlook but option prices are high. Sell insurance (puts) to either collect the high premium or buy the stock at a discount if it dips."
+            res = {
                 "name": "Cash-Secured Put",
                 "rationale": (
-                    f"Model is strongly bullish (score {score:.0f}, bull prob {bull_prob*100:.0f}%) "
-                    f"and IV is elevated — sell a put to get paid while waiting to own the stock at a discount."
+                    f"Model is strongly bullish (score {score:.0f}) and IV is elevated — "
+                    "sell a put to get paid while waiting to own the stock at a discount."
                 ),
                 "legs": [
                     {"action": "SELL", "type": "PUT", "strike": leg_strike,
                      "expiry": expiry, "note": "~25Δ put, collect premium"},
                 ],
-                "execution_note": (
-                    f"Target the ~25Δ put ({dte} DTE). Close at 50% of max profit. "
-                    "Risk: assignment if stock drops through strike."
-                ),
+                "execution_note": "Profit Target: 50% of max credit. Do not hold through earnings jump.",
             }
-        # ... (rest of bull logic)
+        else:
+            summary = "The outlook is positive. Buy a call spread to get leveraged exposure while keeping the cost low."
+            res = {
+                "name": "Bull Call Spread",
+                "rationale": "Strong bull bias, normal IV. Defined-risk debit spread.",
+                "legs": [
+                    {"action": "BUY",  "type": "CALL", "strike": atm_strike, "expiry": expiry, "note": "ATM call"},
+                    {"action": "SELL", "type": "CALL", "strike": call_25d or round(atm_strike*1.07,0), "expiry": expiry, "note": "~25Δ call"},
+                ],
+                "execution_note": "Max risk is the cost of the spread. Exit if the 50-day moving average is broken."
+            }
 
     elif score >= 55:
         if high_iv:
-            lower = put_25d or round(atm_strike * 0.93, 0)
-            return {
+            summary = "Neutral to slightly bullish. Sell a put spread below current prices to collect income as long as the stock doesn't crash."
+            res = {
                 "name": "Bull Put Credit Spread",
-                "rationale": (
-                    f"Model mildly bullish (score {score:.0f}) and IV is high — "
-                    "collect credit by selling a put spread below the market."
-                ),
+                "rationale": "Mildly bullish + high IV. Collect credit with a safety net.",
                 "legs": [
-                    {"action": "SELL", "type": "PUT", "strike": lower,               "expiry": expiry, "note": "~25Δ put"},
-                    {"action": "BUY",  "type": "PUT", "strike": round(lower * 0.95, 0), "expiry": expiry, "note": "protection leg"},
+                    {"action": "SELL", "type": "PUT", "strike": put_25d or round(atm_strike*0.93,0), "expiry": expiry, "note": "~25Δ short put"},
+                    {"action": "BUY",  "type": "PUT", "strike": round((put_25d or atm_strike*0.93)*0.95, 0), "expiry": expiry, "note": "long protection"},
                 ],
-                "execution_note": (
-                    "Max profit = credit received (stock stays above short strike). "
-                    "Close at 50% of credit to limit theta risk decay."
-                ),
+                "execution_note": "Close at 50% profit. Risk is the gap between strikes minus credit."
             }
         else:
-            wing = call_25d or round(atm_strike * 1.07, 0)
-            return {
+            summary = "Mildly bullish. Use a call spread to capture modest gains while limiting your risk."
+            res = {
                 "name": "Bull Call Spread",
-                "rationale": (
-                    f"Model mildly bullish (score {score:.0f}), low IV — "
-                    "debit spread limits cost while retaining upside."
-                ),
+                "rationale": "Mild bull, normal IV. Conservative leverage.",
                 "legs": [
                     {"action": "BUY",  "type": "CALL", "strike": atm_strike, "expiry": expiry, "note": "ATM call"},
-                    {"action": "SELL", "type": "CALL", "strike": wing,       "expiry": expiry, "note": "~25Δ call"},
+                    {"action": "SELL", "type": "CALL", "strike": call_25d or round(atm_strike*1.07,0), "expiry": expiry, "note": "OTM short"},
                 ],
-                "execution_note": "Max profit at expiry above short strike. Risk = net debit.",
+                "execution_note": "Max loss = premium paid. Exit at 50% profit."
             }
 
     elif score >= 45:
         if high_iv:
-            put_wing  = put_25d  or round(atm_strike * 0.93, 0)
-            call_wing = call_25d or round(atm_strike * 1.07, 0)
-            return {
+            summary = "The stock is range-bound and options are expensive. Sell premium on both sides (Iron Condor) to profit from the stock staying still."
+            res = {
                 "name": "Short Iron Condor",
-                "rationale": (
-                    f"Model is neutral (score {score:.0f}) and IV is elevated — "
-                    "sell volatility by collecting premium on both sides."
-                ),
+                "rationale": "Neutral conviction + high IV. Profit from time decay and volatility contraction.",
                 "legs": [
-                    {"action": "SELL", "type": "PUT",  "strike": put_wing,               "expiry": expiry, "note": "~25Δ put"},
-                    {"action": "BUY",  "type": "PUT",  "strike": round(put_wing * 0.95, 0),  "expiry": expiry, "note": "put wing"},
-                    {"action": "SELL", "type": "CALL", "strike": call_wing,               "expiry": expiry, "note": "~25Δ call"},
-                    {"action": "BUY",  "type": "CALL", "strike": round(call_wing * 1.05, 0), "expiry": expiry, "note": "call wing"},
+                    {"action": "SELL", "type": "PUT",  "strike": put_25d or round(atm_strike*0.93,0), "expiry": expiry, "note": "Short Put"},
+                    {"action": "SELL", "type": "CALL", "strike": call_25d or round(atm_strike*1.07,0), "expiry": expiry, "note": "Short Call"},
                 ],
-                "execution_note": (
-                    "Profit if stock stays between short strikes at expiry. "
-                    "Close at 50% of max profit or when one wing is threatened."
-                ),
+                "execution_note": "Max profit if stock stays between short strikes. Risk is defined by outer wings."
             }
         else:
-            return {
+            summary = "Neutral bias with low option prices. Buy both a call and a put (Straddle) to profit from a massive move in EITHER direction."
+            res = {
                 "name": "Long Straddle",
-                "rationale": (
-                    f"Model is neutral (score {score:.0f}) and IV is low — "
-                    "cheap optionality; profits from a big move in either direction."
-                ),
+                "rationale": "Neutral conviction, low IV. Betting on a large 'volatility expansion' move.",
                 "legs": [
-                    {"action": "BUY", "type": "CALL", "strike": atm_strike, "expiry": expiry, "note": "ATM call"},
-                    {"action": "BUY", "type": "PUT",  "strike": atm_strike, "expiry": expiry, "note": "ATM put"},
+                    {"action": "BUY", "type": "CALL", "strike": atm_strike, "expiry": expiry, "note": "ATM Call"},
+                    {"action": "BUY", "type": "PUT",  "strike": atm_strike, "expiry": expiry, "note": "ATM Put"},
                 ],
-                "execution_note": (
-                    f"Breakeven = strike ± total premium paid. Profits grow with distance from strike. "
-                    "Best entered before a known catalyst."
-                ),
+                "execution_note": "Enter only if a catalyst (like earnings or product launch) is imminent."
             }
-
-    elif score >= 35:
-        if high_iv:
-            upper = call_25d or round(atm_strike * 1.07, 0)
-            return {
-                "name": "Bear Call Credit Spread",
-                "rationale": (
-                    f"Model mildly bearish (score {score:.0f}) and IV is high — "
-                    "collect credit by selling a call spread above the market."
-                ),
-                "legs": [
-                    {"action": "SELL", "type": "CALL", "strike": upper,               "expiry": expiry, "note": "~25Δ call"},
-                    {"action": "BUY",  "type": "CALL", "strike": round(upper * 1.05, 0), "expiry": expiry, "note": "protection leg"},
-                ],
-                "execution_note": "Max profit = credit received if stock stays below short strike.",
-            }
-        else:
-            lower = put_25d or round(atm_strike * 0.93, 0)
-            return {
-                "name": "Bear Put Spread",
-                "rationale": (
-                    f"Model mildly bearish (score {score:.0f}), low IV — "
-                    "defined-risk downside play."
-                ),
-                "legs": [
-                    {"action": "BUY",  "type": "PUT", "strike": atm_strike, "expiry": expiry, "note": "ATM put"},
-                    {"action": "SELL", "type": "PUT", "strike": lower,      "expiry": expiry, "note": "~25Δ put"},
-                ],
-                "execution_note": "Max profit at expiry below short strike. Risk = net debit.",
-            }
-
+    
     else:
+        # Bearish strategies
         if multi_bagger_conviction and not high_iv:
-            target_strike = put_25d or round(atm_strike * 0.90, 0)
-            return {
-                "name": "Long OTM Put (10x Potential)",
-                "rationale": (
-                    f"Extreme bearish conviction (score {score:.0f}) + Low IV — "
-                    "buying pure directional optionality for high-velocity downside move."
-                ),
+            summary = "The model is extremely bearish and options are cheap. Buy out-of-the-money puts to capture an explosive crash or breakdown."
+            res = {
+                "name": "Long OTM Put (Alpha Setup)",
+                "rationale": f"Extreme bearish conviction (score {score:.0f}) + Low IV — capture high-velocity breakdown.",
                 "legs": [
-                    {"action": "BUY", "type": "PUT", "strike": target_strike, "expiry": expiry, "note": "~20Δ put for leverage"},
+                    {"action": "BUY", "type": "PUT", "strike": put_25d or round(atm_strike*0.90,0), "expiry": expiry, "note": "~20Δ put"},
                 ],
-                "execution_note": "Max loss = premium paid. 10x potential if breakdown occurs. Exit at 300%+ profit."
+                "execution_note": "Stop Loss: 50% premium. Profit Target: 200%+."
             }
-
-        if high_iv:
-            upper = call_25d or round(atm_strike * 1.07, 0)
-            return {
+        elif high_iv:
+            summary = "Very bearish outlook but options are expensive. Sell call spreads above the market to collect income while betting the stock won't rally."
+            res = {
                 "name": "Bear Call Credit Spread",
-                "rationale": (
-                    f"Model is strongly bearish (score {score:.0f}, bear prob {bear_prob*100:.0f}%) "
-                    f"and IV is high — aggressively sell upside premium."
-                ),
+                "rationale": "Bearish bias + high IV. Collect premium from the 'expensive' upside.",
                 "legs": [
-                    {"action": "SELL", "type": "CALL", "strike": upper,               "expiry": expiry, "note": "~25Δ call"},
-                    {"action": "BUY",  "type": "CALL", "strike": round(upper * 1.05, 0), "expiry": expiry, "note": "protection leg"},
+                    {"action": "SELL", "type": "CALL", "strike": call_25d or round(atm_strike*1.07,0), "expiry": expiry, "note": "Short Call"},
+                    {"action": "BUY",  "type": "CALL", "strike": round((call_25d or atm_strike*1.07)*1.05,0), "expiry": expiry, "note": "Long Call"},
                 ],
-                "execution_note": "Max profit = full credit if stock stays below short strike.",
+                "execution_note": "Close at 50% profit. Risk is capped by the long call."
             }
         else:
-            return {
+            summary = "The stock is likely to fall. Buy a put outright to profit from the downside with direct leverage."
+            res = {
                 "name": "Long Put",
-                "rationale": (
-                    f"Model is strongly bearish (score {score:.0f}) and IV is low — "
-                    "buy a put outright for maximum leverage on downside."
-                ),
+                "rationale": "Strong bearish bias, normal IV. Direct downside leverage.",
                 "legs": [
-                    {"action": "BUY", "type": "PUT", "strike": atm_strike, "expiry": expiry, "note": "ATM put"},
+                    {"action": "BUY", "type": "PUT", "strike": atm_strike, "expiry": expiry, "note": "ATM Put"},
                 ],
-                "execution_note": (
-                    "Max loss = premium paid. Sell before expiry if thesis plays out — "
-                    "avoid holding through expiry."
-                ),
+                "execution_note": "Profit increases as stock falls. Exit if the 50-day moving average is reclaimed."
             }
+
+    if not res:
+        res = {"name": "No Recommendation", "rationale": "Inconsistent conviction and IV signals.", "legs": [], "execution_note": ""}
+    
+    res["plain_english_summary"] = summary
+    return res
 
 
 # ── Internal ──────────────────────────────────────────────────────────────────
+
+def _is_near_earnings(stock, days: int = _EARNINGS_WARNING_DAYS) -> bool:
+    """Return True if stock reports earnings within `days` calendar days."""
+    ned = getattr(stock, "next_earnings_date", None)
+    if not ned:
+        return False
+    try:
+        from datetime import date as _date
+        if isinstance(ned, str):
+            from datetime import datetime as _dt
+            ned_date = _dt.strptime(ned[:10], "%Y-%m-%d").date()
+        elif hasattr(ned, "date"):
+            ned_date = ned.date()
+        else:
+            ned_date = ned
+        return 0 <= (ned_date - _date.today()).days <= days
+    except Exception:
+        return False
+
 
 def _run_analysis(yticker, stock, config: dict) -> Optional[dict]:
     from data.fetcher import _yf_call
@@ -333,6 +308,29 @@ def _run_analysis(yticker, stock, config: dict) -> Optional[dict]:
     call_25d = _find_delta_strike(calls, price, T, rf,  0.25, "call")
     put_25d  = _find_delta_strike(puts,  price, T, rf, -0.25, "put")
 
+    # Jane Street / PhD Math fix: detect imminent earnings and compute implied move
+    # from the ATM straddle rather than relying on BS (which assumes Brownian motion,
+    # not the jump-diffusion reality of an earnings print).
+    near_earnings = _is_near_earnings(stock)
+    implied_move_pct: Optional[float] = None
+    earnings_warning: Optional[str] = None
+    if near_earnings:
+        call_ask = float(atm_call_row.get("ask", 0) or 0)
+        put_ask_val = (
+            float(atm_put_row.get("ask", 0) or 0) if atm_put_row is not None else 0.0
+        )
+        if price > 0 and (call_ask + put_ask_val) > 0:
+            implied_move_pct = (call_ask + put_ask_val) / price * 100
+        move_str = f" Implied straddle move: ±{implied_move_pct:.1f}%." if implied_move_pct else ""
+        earnings_warning = (
+            f"Earnings ≤{_EARNINGS_WARNING_DAYS}d away. BS Greeks are unreliable — "
+            f"earnings are jump-diffusion events, not Brownian motion.{move_str}"
+        )
+        logger.warning(
+            f"{stock.ticker}: earnings imminent — BS Greeks unreliable. "
+            f"Implied move: {implied_move_pct}"
+        )
+
     def _row_to_dict(row, greeks):
         if row is None:
             return None
@@ -357,6 +355,9 @@ def _run_analysis(yticker, stock, config: dict) -> Optional[dict]:
         "atm_put":         _row_to_dict(atm_put_row,  atm_put_greeks),
         "call_25d_strike": call_25d,
         "put_25d_strike":  put_25d,
+        "near_earnings":   near_earnings,
+        "implied_move_pct": implied_move_pct,
+        "earnings_warning": earnings_warning,
     }
 
 

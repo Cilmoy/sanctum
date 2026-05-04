@@ -92,3 +92,12 @@ sanctum analyze NVDA --set dcf.terminal_growth_rate=0.04
 - `sanctum/sanctum.py`: The "Cockpit" (CLI entry point).
 - `sanctum/models/`: The "Engine" (DCF, WACC, Bayesian, etc.).
 - `sanctum/data/`: The "Fuel" (yfinance fetcher and SQLite DB).
+
+---
+
+## 🗺 Roadmap
+- **Phase 1 (Complete):** Core Quantitative Pipeline & Persistent CLI.
+- **Phase 2 (Complete):** Interactive TUI (Terminal User Interface) & "One-Command" setup.
+- **Phase 3 (Complete):** **Alpha Pipeline** — Convexity math, Finviz scraping, and tactical execution.
+- **Phase 4 (Next):** **Institutional Risk & Sizing** — Implementing the Kelly Optimizer and Capital Extraction engine.
+- **Phase 5:** **PDF Export Engine** — Branded, professional research reports for club meetings.

@@ -5,14 +5,15 @@ Dark theme, gold accent. Tables should be clean and scannable.
 """
 
 import logging
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional
 from contextlib import contextmanager
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.table import Table
 from rich import box
 from rich.text import Text
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.columns import Columns
 from rich.layout import Layout
@@ -55,36 +56,40 @@ class TerminalOutput:
         with console.status(f"[bold {GOLD}]{message}[/bold {GOLD}]", spinner="dots"):
             yield
 
-    def print_header(self, subtitle: str = "") -> None:
+    def get_header(self, subtitle: str = "") -> Panel:
         title = f"[bold {GOLD}]{self.brand}[/bold {GOLD}]"
         if subtitle:
             title += f"\n[dim]{subtitle}[/dim]"
-        console.print(Panel(title, border_style=GOLD, expand=False))
+        return Panel(title, border_style=GOLD, expand=False)
 
-    def print_screen_results(self, results: list[dict], shortlisted: list[dict]) -> None:
+    def print_header(self, subtitle: str = "") -> None:
+        console.print(self.get_header(subtitle))
+
+    def get_screen_results_table(self, results: list[dict], shortlisted: list[dict]) -> Group:
         top_n = self.config.get("output", {}).get("top_n", 20)
         display = results[:top_n]
 
-        console.print(
+        info = Text.from_markup(
             f"\n[{GOLD}]Universe:[/{GOLD}] {len(results)} scored  "
             f"[{GOLD}]Shortlisted:[/{GOLD}] {len(shortlisted)}\n"
         )
 
         table = Table(
-            box=box.SIMPLE_HEAD,
+            box=box.SQUARE,
             header_style=f"bold {GOLD}",
             show_lines=False,
             pad_edge=False,
+            expand=True,
         )
-        table.add_column("Rank", justify="right", style=DIM)
-        table.add_column("Ticker", style=f"bold {GOLD}", no_wrap=True)
-        table.add_column("Name", style=DIM)
-        table.add_column("F.Score", justify="right")
-        table.add_column("C.Score", justify="right")
-        table.add_column("Archetype", style=DIM)
-        table.add_column("Price", justify="right")
-        table.add_column("Upside", justify="right")
-        table.add_column("Sector", style=DIM)
+        table.add_column("Rank", justify="right", style=DIM, width=4)
+        table.add_column("Ticker", style=f"bold {GOLD}", ratio=1)
+        table.add_column("Name", style=DIM, ratio=3)
+        table.add_column("F.Score", justify="right", width=8)
+        table.add_column("C.Score", justify="right", width=8)
+        table.add_column("Archetype", style=DIM, ratio=2)
+        table.add_column("Price", justify="right", width=10)
+        table.add_column("Upside", justify="right", width=10)
+        table.add_column("Sector", style=DIM, ratio=2)
 
         for i, r in enumerate(display, 1):
             score = r.get("score", 0.0)
@@ -100,38 +105,44 @@ class TerminalOutput:
             table.add_row(
                 str(i),
                 r.get("ticker", "?"),
-                name[:24],
+                name,
                 Text(f"{score:.1f}", style=_score_color(score)),
                 Text(f"{cscore:.1f}", style=_score_color(cscore)),
-                arch_short[:22],
+                arch_short,
                 f"${price:.2f}" if price else "—",
                 _upside_str(upside),
-                sector[:12] if sector else "—",
+                sector if sector else "—",
             )
+        return Group(info, table)
 
-        console.print(table)
+    def print_screen_results(self, results: list[dict], shortlisted: list[dict]) -> None:
+        console.print(self.get_screen_results_table(results, shortlisted))
 
-    def print_analysis(self, result: dict, show_math: bool = True) -> None:
+    def get_analysis_renderables(self, result: dict, show_math: bool = True) -> Group:
         ticker = result.get("ticker", "?")
         name = result.get("company_name")
-        header = f"── {ticker}" + (f"  {name}" if name else "") + " ──────────────────────────────────"
-        console.print(f"\n[bold {GOLD}]{header}[/bold {GOLD}]")
-
-        self._print_stock_info(result)
-        self._print_summary_table(result)
-        self._print_score_breakdown(result)
-        self._print_catalyst_section(result)
+        title = f"{ticker}" + (f"  ({name})" if name else "")
+        
+        elements = [Rule(title, style=GOLD)]
+        elements.append(self._get_stock_info_table(result))
+        elements.append(self._get_summary_table(result))
+        elements.append(self._get_score_breakdown_table(result))
+        elements.append(self._get_catalyst_renderable(result))
 
         if show_math:
-            self._print_wacc_derivation(result)
-            self._print_dcf_table(result)
-            self._print_mc_table(result)
-            self._print_bayesian_trace(result)
-            self._print_sensitivity_table(result)
+            elements.append(self._get_wacc_derivation_renderable(result))
+            elements.append(self._get_dcf_table(result))
+            elements.append(self._get_mc_table(result))
+            elements.append(self._get_bayesian_trace_table(result))
+            elements.append(self._get_sensitivity_table(result))
 
-        self._print_options_section(result)
+        elements.append(self._get_options_renderable(result))
+        return Group(*[e for e in elements if e is not None])
 
-    def _print_stock_info(self, result: dict) -> None:
+    def print_analysis(self, result: dict, show_math: bool = True) -> None:
+        console.print(self.get_analysis_renderables(result, show_math))
+
+    def _get_stock_info_table(self, result: dict) -> Table:
         price = result.get("current_price")
         mktcap = result.get("market_cap")
         beta = result.get("beta")
@@ -162,11 +173,11 @@ class TerminalOutput:
                 return f"${mc/1e9:.1f}B"
             return f"${mc/1e6:.0f}M"
 
-        t = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
-        t.add_column("Label", style=DIM, no_wrap=True)
-        t.add_column("Value", no_wrap=True)
-        t.add_column("Label2", style=DIM, no_wrap=True)
-        t.add_column("Value2", no_wrap=True)
+        t = Table(box=box.SQUARE, show_header=False, pad_edge=False, expand=True)
+        t.add_column("Label", style=DIM, no_wrap=True, ratio=1)
+        t.add_column("Value", no_wrap=True, ratio=2)
+        t.add_column("Label2", style=DIM, no_wrap=True, ratio=1)
+        t.add_column("Value2", no_wrap=True, ratio=2)
 
         rows = [
             ("Sector",       sector or "—",
@@ -188,12 +199,15 @@ class TerminalOutput:
         for l1, v1, l2, v2 in rows:
             t.add_row(l1, v1, l2, v2)
 
-        console.print(t)
+        return t
 
-    def _print_summary_table(self, result: dict) -> None:
-        t = Table(box=box.SIMPLE, header_style=f"bold {GOLD}", show_header=True)
-        t.add_column("Metric")
-        t.add_column("Value", justify="right")
+    def _print_stock_info(self, result: dict) -> None:
+        console.print(self._get_stock_info_table(result))
+
+    def _get_summary_table(self, result: dict) -> Table:
+        t = Table(box=box.SQUARE, header_style=f"bold {GOLD}", show_header=True, expand=True)
+        t.add_column("Metric", ratio=1)
+        t.add_column("Value", justify="right", ratio=1)
 
         sentiment = result.get("news_sentiment")
         if sentiment is not None:
@@ -213,6 +227,7 @@ class TerminalOutput:
             ("DCF Upside", f"{result.get('dcf_upside_pct', 0):+.1f}%"),
             ("MC Median (P50)", f"${result.get('mc_p50', 0):.2f}"),
             ("Expected Value", f"${result.get('expected_value', 0):.2f}"),
+            ("Implied Hurdle", f"{result.get('implied_hurdle_rate', 0)*100:.2f}%"),
             ("Bull Prob", f"{result.get('bayesian_bull_prob', 0)*100:.1f}%"),
             ("Base Prob", f"{result.get('bayesian_base_prob', 0)*100:.1f}%"),
             ("Bear Prob", f"{result.get('bayesian_bear_prob', 0)*100:.1f}%"),
@@ -221,17 +236,19 @@ class TerminalOutput:
         for label, val in rows:
             t.add_row(label, val)
 
-        console.print(t)
+        return t
 
-    def _print_score_breakdown(self, result: dict) -> None:
+    def _print_summary_table(self, result: dict) -> None:
+        console.print(self._get_summary_table(result))
+
+    def _get_score_breakdown_table(self, result: dict) -> Optional[Group]:
         components = result.get("score_components")
         if not components:
-            return
+            return None
 
-        console.print(f"\n[bold]Score Breakdown[/bold]")
-        t = Table(box=box.SIMPLE, header_style=f"bold {GOLD}", show_header=True)
-        t.add_column("Component")
-        t.add_column("Score", justify="right")
+        t = Table(box=box.SQUARE, header_style=f"bold {GOLD}", show_header=True, expand=True)
+        t.add_column("Component", ratio=1)
+        t.add_column("Score", justify="right", ratio=1)
 
         labels = {
             "bayesian_upside": "Bayesian Upside  (27%)",
@@ -246,14 +263,20 @@ class TerminalOutput:
             if val is not None:
                 t.add_row(label, Text(f"{val:.1f}", style=_score_color(val)))
 
-        console.print(t)
+        return Group(Rule("Score Breakdown", style=GOLD, align="left"), t)
 
-    def _print_wacc_derivation(self, result: dict) -> None:
+    def _print_score_breakdown(self, result: dict) -> None:
+        renderable = self._get_score_breakdown_table(result)
+        if renderable:
+            console.print(renderable)
+
+    def _get_wacc_derivation_renderable(self, result: dict) -> Optional[Group]:
         w = result.get("wacc_detail", {})
         if not w:
-            return
+            return None
         terminal_g = result.get("dcf_detail", {}).get("terminal_growth_rate", 0.03)
-        console.print(f"\n[bold]WACC Derivation[/bold]")
+        
+        lines = [Rule("WACC Derivation", style=GOLD, align="left")]
         rf = w.get("rf", 0)
         beta = w.get("beta", 1.0)
         erp = w.get("erp", 0)
@@ -264,60 +287,50 @@ class TerminalOutput:
         wd = w.get("wd", 0.0)
         wacc = w.get("wacc", 0)
 
-        console.print(f"  Rf  = {rf*100:.2f}%  [dim](10Y UST yield — set in config, not fetched live)[/dim]")
-        console.print(f"  β   = {beta:.3f}  [dim](yfinance 5-yr monthly regression vs S&P 500)[/dim]")
-        console.print(f"  ERP = {erp*100:.2f}%  [dim](Damodaran implied equity risk premium — config constant)[/dim]")
+        lines.append(Text(f"  Rf  = {rf*100:.2f}%  (10Y UST yield)"))
+        lines.append(Text(f"  β   = {beta:.3f}  (yfinance 5-yr monthly regression)"))
+        lines.append(Text(f"  ERP = {erp*100:.2f}%  (Damodaran implied ERP)"))
         if scp:
-            console.print(f"  SCP = {scp*100:.2f}%  [dim](Duff & Phelps small-cap premium — market cap < threshold)[/dim]")
-        console.print(f"  Ke  = {ke*100:.2f}%  [dim][Rf + β×ERP + SCP][/dim]")
-        console.print(f"  Kd(after-tax) = {kd*100:.2f}%  [dim][{w.get('kd_source', '')}][/dim]")
-        console.print(f"  wE  = {we*100:.1f}%   wD = {wd*100:.1f}%")
-        console.print(f"  [bold {GOLD}]WACC = {wacc*100:.2f}%[/bold {GOLD}]")
+            lines.append(Text(f"  SCP = {scp*100:.2f}%  (Small-cap premium)"))
+        lines.append(Text(f"  Ke  = {ke*100:.2f}%  [Rf + β×ERP + SCP]"))
+        lines.append(Text(f"  Kd(after-tax) = {kd*100:.2f}%  [{w.get('kd_source', '')}]"))
+        lines.append(Text(f"  wE  = {we*100:.1f}%   wD = {wd*100:.1f}%"))
+        lines.append(Text(f"  WACC (Our Hurdle)  = {wacc*100:.2f}%", style=f"bold {GOLD}"))
+        
+        implied_hurdle = result.get("implied_hurdle_rate", 0)
+        mos = implied_hurdle - wacc
+        mos_style = UP_COLOR if mos > 0 else DOWN_COLOR
+        lines.append(Text(f"  Implied Hurdle     = {implied_hurdle*100:.2f}% (Market Pricing)", style=f"bold"))
+        lines.append(Text(f"  Spread / MoS       = {mos*100:+.2f}%", style=f"bold {mos_style}"))
 
-        # Plain-English interpretation — each print is self-contained
-        console.print(f"")
-        console.print(f"  [dim]WACC = {wacc*100:.2f}% is the hurdle rate: the minimum annualized return the[/dim]")
-        console.print(f"  [dim]business must earn to justify its cost of capital. The DCF discounts[/dim]")
-        console.print(f"  [dim]every projected cash flow at this rate — a higher WACC means a lower[/dim]")
-        console.print(f"  [dim]implied price, all else equal.[/dim]")
-
-        if beta > 1.3:
-            console.print(f"  [dim]β = {beta:.2f} is elevated: this stock historically moves {beta:.1f}x the market,[/dim]")
-            console.print(f"  [dim]which drives Ke to {ke*100:.1f}% and pushes WACC up.[/dim]")
-        elif beta < 0.7:
-            console.print(f"  [dim]β = {beta:.2f} is low — the stock moves less than the market,[/dim]")
-            console.print(f"  [dim]which suppresses Ke to {ke*100:.1f}% and holds WACC down.[/dim]")
-        else:
-            console.print(f"  [dim]β = {beta:.2f} is broadly market-correlated, giving Ke = {ke*100:.1f}%.[/dim]")
-
-        if wd > 0.15:
-            console.print(f"  [dim]Debt is {wd*100:.0f}% of capital. Kd ({kd*100:.1f}% after-tax) < Ke ({ke*100:.1f}%),[/dim]")
-            console.print(f"  [dim]so the leverage pulls the blended WACC below the all-equity cost.[/dim]")
-        elif wd < 0.05:
-            console.print(f"  [dim]Near-zero debt ({wd*100:.0f}%) — WACC ≈ Ke, entirely equity-funded.[/dim]")
-
-        console.print(f"  [dim]Key assumptions underpinning everything below:[/dim]")
-        console.print(f"  [dim]  • Terminal growth rate ({terminal_g*100:.1f}%): set in config — the DCF is[/dim]")
-        console.print(f"  [dim]    highly sensitive to this. A 0.5pp change can move implied price 10–20%.[/dim]")
-        console.print(f"  [dim]  • FCF margin: trailing 3-yr average (or sector fallback if negative/sparse).[/dim]")
-        console.print(f"  [dim]    Projects past margins into the future — verify against guidance.[/dim]")
-        console.print(f"  [dim]  • ERP ({erp*100:.1f}%) and Rf ({rf*100:.2f}%) are config constants, not live.[/dim]")
-        console.print(f"  [dim]    Update wacc.equity_risk_premium and wacc.risk_free_rate when rates shift.[/dim]")
-
+        # Add brief interpretation
+        interpretation = (
+            f"\n  WACC of {wacc*100:.2f}% is the hurdle rate. "
+            f"Beta of {beta:.2f} implies {'high' if beta > 1.3 else 'low' if beta < 0.7 else 'average'} volatility."
+        )
+        lines.append(Text(interpretation, style="dim"))
+        
         for note in w.get("notes", []):
-            console.print(f"  [yellow]Note: {note}[/yellow]")
+            lines.append(Text(f"  Note: {note}", style="yellow"))
+            
+        return Group(*lines)
 
-    def _print_dcf_table(self, result: dict) -> None:
+    def _print_wacc_derivation(self, result: dict) -> None:
+        renderable = self._get_wacc_derivation_renderable(result)
+        if renderable:
+            console.print(renderable)
+
+    def _get_dcf_table(self, result: dict) -> Optional[Group]:
         dcf = result.get("dcf_detail", {})
         if not dcf:
-            return
-        console.print(f"\n[bold]DCF Projection[/bold]")
-        t = Table(box=box.SIMPLE, header_style=f"bold {GOLD}")
-        t.add_column("Year", justify="right")
-        t.add_column("Revenue", justify="right")
-        t.add_column("FCF Margin", justify="right")
-        t.add_column("FCF", justify="right")
-        t.add_column("PV(FCF)", justify="right")
+            return None
+        
+        t = Table(box=box.SQUARE, header_style=f"bold {GOLD}", expand=True)
+        t.add_column("Year", justify="right", ratio=1)
+        t.add_column("Revenue", justify="right", ratio=2)
+        t.add_column("FCF Margin", justify="right", ratio=2)
+        t.add_column("FCF", justify="right", ratio=2)
+        t.add_column("PV(FCF)", justify="right", ratio=2)
 
         for row in dcf.get("projection_rows", []):
             t.add_row(
@@ -328,48 +341,67 @@ class TerminalOutput:
                 f"${row['pv_fcf']/1e9:.2f}B",
             )
 
-        console.print(t)
         tv = dcf.get("terminal_value", 0)
         pv_tv = dcf.get("pv_terminal_value", 0)
         ev = dcf.get("enterprise_value", 0)
         implied = dcf.get("implied_price", 0)
         net_debt = dcf.get("net_debt", 0)
-        console.print(f"  Terminal Value: ${tv/1e9:.2f}B  →  PV: ${pv_tv/1e9:.2f}B")
-        console.print(f"  Enterprise Value: ${ev/1e9:.2f}B  Net Debt: ${net_debt/1e9:.2f}B")
-        console.print(f"  [bold {GOLD}]DCF Implied Price: ${implied:.2f}[/bold {GOLD}]")
+        
+        info = [
+            Text("\nDCF Projection", style="bold"),
+            t,
+            Text(f"  Terminal Value: ${tv/1e9:.2f}B  →  PV: ${pv_tv/1e9:.2f}B"),
+            Text(f"  Enterprise Value: ${ev/1e9:.2f}B  Net Debt: ${net_debt/1e9:.2f}B"),
+            Text(f"  DCF Implied Price: ${implied:.2f}", style=f"bold {GOLD}")
+        ]
 
         for note in dcf.get("notes", []):
             color = "yellow" if "WARNING" in note or "Negative" in note else "dim"
-            console.print(f"  [{color}]  {note}[/{color}]")
+            info.append(Text(f"  {note}", style=color))
+            
+        return Group(*info)
 
-    def _print_mc_table(self, result: dict) -> None:
+    def _print_dcf_table(self, result: dict) -> None:
+        renderable = self._get_dcf_table(result)
+        if renderable:
+            console.print(renderable)
+
+    def _get_mc_table(self, result: dict) -> Optional[Group]:
         mc = result.get("mc_detail", {})
         if not mc:
-            return
-        console.print(f"\n[bold]Monte Carlo ({mc.get('n_sims', '?')} simulations)[/bold]")
+            return None
+        
         percentiles = mc.get("percentiles", {})
-        t = Table(box=box.SIMPLE, header_style=f"bold {GOLD}")
-        t.add_column("Percentile")
-        t.add_column("Implied Price", justify="right")
+        t = Table(box=box.SQUARE, header_style=f"bold {GOLD}", expand=True)
+        t.add_column("Percentile", ratio=1)
+        t.add_column("Implied Price", justify="right", ratio=1)
 
         for label in ["P5", "P10", "P25", "P50", "P75", "P90", "P95"]:
             val = percentiles.get(label)
             t.add_row(label, f"${val:.2f}" if val else "—")
 
-        console.print(t)
-        console.print(f"  P(price > current):  {mc.get('p_above_current', 0)*100:.1f}%")
-        console.print(f"  P(price > analyst target): {mc.get('p_above_target', 0)*100:.1f}%")
+        return Group(
+            Text(f"\nMonte Carlo ({mc.get('n_sims', '?')} simulations)", style="bold"),
+            t,
+            Text(f"  P(price > current):  {mc.get('p_above_current', 0)*100:.1f}%"),
+            Text(f"  P(price > analyst target): {mc.get('p_above_target', 0)*100:.1f}%")
+        )
 
-    def _print_bayesian_trace(self, result: dict) -> None:
+    def _print_mc_table(self, result: dict) -> None:
+        renderable = self._get_mc_table(result)
+        if renderable:
+            console.print(renderable)
+
+    def _get_bayesian_trace_table(self, result: dict) -> Optional[Group]:
         trace = result.get("bayesian_trace", [])
         if not trace:
-            return
-        console.print(f"\n[bold]Bayesian Update Trace[/bold]")
-        t = Table(box=box.SIMPLE, header_style=f"bold {GOLD}")
-        t.add_column("Step")
-        t.add_column("Bull", justify="right")
-        t.add_column("Base", justify="right")
-        t.add_column("Bear", justify="right")
+            return None
+        
+        t = Table(box=box.SQUARE, header_style=f"bold {GOLD}", expand=True)
+        t.add_column("Step", ratio=2)
+        t.add_column("Bull", justify="right", ratio=1)
+        t.add_column("Base", justify="right", ratio=1)
+        t.add_column("Bear", justify="right", ratio=1)
 
         for step in trace:
             t.add_row(
@@ -379,18 +411,23 @@ class TerminalOutput:
                 f"{step['bear']*100:.1f}%",
             )
 
-        console.print(t)
+        return Group(Text("\nBayesian Update Trace", style="bold"), t)
 
-    def _print_sensitivity_table(self, result: dict) -> None:
+    def _print_bayesian_trace(self, result: dict) -> None:
+        renderable = self._get_bayesian_trace_table(result)
+        if renderable:
+            console.print(renderable)
+
+    def _get_sensitivity_table(self, result: dict) -> Optional[Group]:
         sens = result.get("sensitivity_detail", {})
         if not sens:
-            return
+            return None
         delta = sens.get("delta_pct", 5)
-        console.print(f"\n[bold]Revenue Sensitivity (±{delta}%)[/bold]")
-        t = Table(box=box.SIMPLE, header_style=f"bold {GOLD}")
-        t.add_column("Scenario")
-        t.add_column("Implied Price", justify="right")
-        t.add_column("vs Current", justify="right")
+        
+        t = Table(box=box.SQUARE, header_style=f"bold {GOLD}", expand=True)
+        t.add_column("Scenario", ratio=1)
+        t.add_column("Implied Price", justify="right", ratio=1)
+        t.add_column("vs Current", justify="right", ratio=1)
 
         for label, price_key, upside_key in [
             ("Bear",  "bear_price",  "bear_upside_pct"),
@@ -401,25 +438,38 @@ class TerminalOutput:
             vs_cur = sens.get(upside_key, 0) or 0
             t.add_row(label, f"${price:.2f}", _upside_str(vs_cur))
 
-        console.print(t)
+        duration = sens.get("dV_dwacc_pct", 0)
+        duration_info = Text.from_markup(
+            f"\n  [bold]Interest Rate Duration:[/bold] {duration:.1f}% "
+            f"[dim](Value change per 100bps move in rates)[/dim]"
+        )
 
-    def _print_catalyst_section(self, result: dict) -> None:
+        return Group(Text(f"\nRevenue Sensitivity (±{delta}%)", style="bold"), t, duration_info)
+
+    def _print_sensitivity_table(self, result: dict) -> None:
+        renderable = self._get_sensitivity_table(result)
+        if renderable:
+            console.print(renderable)
+
+    def _get_catalyst_renderable(self, result: dict) -> Optional[Group]:
         cat = result.get("catalyst_detail") or {}
         cscore = result.get("catalyst_score")
         if cscore is None:
-            return
+            return None
 
         archetype = result.get("trade_archetype", "")
-        console.print(f"\n[bold]Catalyst Score[/bold]  "
-                      f"[{_score_color(cscore)}]{cscore:.1f} / 100[/{_score_color(cscore)}]  "
-                      f"[dim]{archetype}[/dim]")
+        header = Text.from_markup(
+            f"\n[bold]Catalyst Score[/bold]  "
+            f"[{_score_color(cscore)}]{cscore:.1f} / 100[/{_score_color(cscore)}]  "
+            f"[dim]{archetype}[/dim]"
+        )
 
-        # Component breakdown
+        elements = [header]
         components = cat.get("components", {})
         if components:
-            ct = Table(box=box.SIMPLE, header_style=f"bold {GOLD}", show_header=True, pad_edge=False)
-            ct.add_column("Component")
-            ct.add_column("Score", justify="right")
+            ct = Table(box=box.SQUARE, header_style=f"bold {GOLD}", show_header=True, pad_edge=False, expand=True)
+            ct.add_column("Component", ratio=1)
+            ct.add_column("Score", justify="right", ratio=1)
 
             labels = {
                 "earnings_acceleration": "Earnings Acceleration  (30%)",
@@ -432,64 +482,38 @@ class TerminalOutput:
                 v = components.get(key)
                 if v is not None:
                     ct.add_row(label, Text(f"{v:.1f}", style=_score_color(v)))
-            console.print(ct)
+            elements.append(ct)
 
-        # Key data points
+        # Data points
         dte = cat.get("days_to_earnings")
         ned = cat.get("next_earnings_date")
         streak = cat.get("earnings_beat_streak")
-        avg_beat = cat.get("earnings_beat_avg_pct")
-        accelerating = cat.get("earnings_beat_accelerating")
         insider_buys = cat.get("insider_buys_60d")
-        insider_val = cat.get("insider_buy_value_60d")
-        insider_own = cat.get("insider_own_pct")
-        inst_own = cat.get("institutional_own_pct")
-        net_upgrades = cat.get("analyst_net_upgrades_30d")
-        short_pct = cat.get("short_pct_float")
+        
+        info_line = []
+        if ned: info_line.append(f"Next report {ned} ({dte}d)")
+        if streak: info_line.append(f"Beat streak: {streak}Q")
+        if info_line:
+            elements.append(Text(" · ".join(info_line), style="dim"))
 
-        console.print(f"\n  [dim]Earnings:[/dim]", end="")
-        if ned:
-            console.print(f"  [dim]Next report {ned}" + (f" ({dte}d)" if dte is not None else "") + "[/dim]", end="")
-        if streak is not None:
-            console.print(f"  [dim]·  Beat streak: {streak}Q[/dim]", end="")
-        if avg_beat is not None:
-            console.print(f"  [dim]·  Avg beat: {avg_beat*100:+.1f}%[/dim]", end="")
-        if accelerating is not None:
-            acc_str = "accelerating ↑" if accelerating else "decelerating ↓"
-            console.print(f"  [dim]·  {acc_str}[/dim]", end="")
-        console.print("")
-
-        console.print(f"  [dim]Ownership:[/dim]", end="")
-        if insider_own is not None:
-            console.print(f"  [dim]Insiders {insider_own*100:.1f}%[/dim]", end="")
-        if inst_own is not None:
-            console.print(f"  [dim]·  Institutions {inst_own*100:.1f}%[/dim]", end="")
-        if insider_buys is not None:
-            val_str = f"  (${insider_val/1e6:.1f}M)" if insider_val else ""
-            console.print(f"  [dim]·  {insider_buys} insider buy(s) last 60d{val_str}[/dim]", end="")
-        console.print("")
-
-        console.print(f"  [dim]Analysts:[/dim]", end="")
-        if net_upgrades is not None:
-            sign = "+" if net_upgrades >= 0 else ""
-            console.print(f"  [dim]Net {sign}{net_upgrades} upgrades/downgrades (30d)[/dim]", end="")
-        if short_pct is not None:
-            console.print(f"  [dim]·  Short float: {short_pct*100:.1f}%[/dim]", end="")
-        console.print("")
-
-        # Highlight notable signals from notes
         for note in cat.get("notes", []):
-            console.print(f"  [{GOLD}]▸ {note}[/{GOLD}]")
+            elements.append(Text(f"▸ {note}", style=GOLD))
 
-    def _print_options_section(self, result: dict) -> None:
+        return Group(*elements)
+
+    def _print_catalyst_section(self, result: dict) -> None:
+        renderable = self._get_catalyst_renderable(result)
+        if renderable:
+            console.print(renderable)
+
+    def _get_options_renderable(self, result: dict) -> Optional[Group]:
         opts = result.get("options_analysis")
         if not opts:
-            return
+            return None
 
         exp     = opts.get("expiration", "")
         dte     = opts.get("dte", 0)
         atm_iv  = opts.get("atm_iv", 0)
-        hv30    = opts.get("hv30")
         regime  = opts.get("iv_regime", "normal")
         call    = opts.get("atm_call") or {}
         put     = opts.get("atm_put") or {}
@@ -497,88 +521,61 @@ class TerminalOutput:
 
         regime_color = {"high": "red", "low": "green", "normal": GOLD}.get(regime, GOLD)
 
-        console.print(f"\n[bold]Options Analysis[/bold]  "
-                      f"[dim]{exp}  ·  {dte} DTE[/dim]")
-
-        # IV summary line
-        hv_str = f"  HV30 {hv30*100:.1f}%" if hv30 else ""
-        console.print(
-            f"  ATM IV: [{regime_color}]{atm_iv*100:.1f}%  ({regime} IV)[/{regime_color}]"
-            f"[dim]{hv_str}[/dim]"
+        header = Text.from_markup(
+            f"\n[bold]Options Analysis[/bold] [dim]{exp} · {dte} DTE[/dim]\n"
+            f"  ATM IV: [{regime_color}]{atm_iv*100:.1f}% ({regime} IV)[/{regime_color}]"
         )
 
-        # ATM contracts table
-        t = Table(box=box.SIMPLE, header_style=f"bold {GOLD}", pad_edge=False)
-        t.add_column("",       style=f"bold {GOLD}", no_wrap=True)
-        t.add_column("Strike", justify="right")
-        t.add_column("Bid",    justify="right")
-        t.add_column("Ask",    justify="right")
-        t.add_column("IV",     justify="right")
-        t.add_column("Delta",  justify="right")
-        t.add_column("Gamma",  justify="right")
-        t.add_column("Theta",  justify="right")
-        t.add_column("Vega",   justify="right")
-        t.add_column("Vol",    justify="right", style=DIM)
-        t.add_column("OI",     justify="right", style=DIM)
-
-        def _g(contract, key, fmt):
-            greeks = contract.get("greeks") or {}
-            v = greeks.get(key)
-            return fmt.format(v) if v is not None else "—"
+        t = Table(box=box.SQUARE, header_style=f"bold {GOLD}", pad_edge=False, expand=True)
+        t.add_column("",       style=f"bold {GOLD}", ratio=1)
+        t.add_column("Strike", justify="right", ratio=1)
+        t.add_column("Bid",    justify="right", ratio=1)
+        t.add_column("Ask",    justify="right", ratio=1)
+        t.add_column("Delta",  justify="right", ratio=1)
+        t.add_column("OI",     justify="right", style=DIM, ratio=1)
 
         for label, c in [("CALL", call), ("PUT", put)]:
-            if not c:
-                continue
+            if not c: continue
+            greeks = c.get("greeks") or {}
+            delta = greeks.get("delta")
             t.add_row(
                 label,
                 f"${c.get('strike', 0):.2f}",
                 f"${c.get('bid', 0):.2f}",
                 f"${c.get('ask', 0):.2f}",
-                f"{c.get('iv', 0)*100:.1f}%",
-                _g(c, "delta", "{:+.3f}"),
-                _g(c, "gamma", "{:.4f}"),
-                _g(c, "theta", "{:+.3f}"),
-                _g(c, "vega",  "{:.3f}"),
-                f"{c.get('volume', 0):,}",
+                f"{delta:+.3f}" if delta is not None else "—",
                 f"{c.get('open_interest', 0):,}",
             )
-        console.print(t)
 
-        # Strategy recommendation
+        elements = [header, t]
+
+        warning = opts.get("earnings_warning")
+        if warning:
+            elements.append(Text(f"  ⚠  {warning}", style="bold yellow"))
+            move = opts.get("implied_move_pct")
+            if move is not None:
+                elements.append(Text(
+                    f"  Compare ±{move:.1f}% implied move to your Bayesian/Catalyst upside — "
+                    "if model predicts a larger move, buy premium; if smaller, sell.",
+                    style="dim"
+                ))
+
         if strat:
-            console.print(f"  [bold {GOLD}]Suggested: {strat.get('name', '')}[/bold {GOLD}]")
-            console.print(f"  [dim]{strat.get('rationale', '')}[/dim]")
+            elements.append(Text(f"  Suggested: {strat.get('name', '')}", style=f"bold {GOLD}"))
+            elements.append(Text(f"  {strat.get('rationale', '')}", style="dim"))
+            
+            summary = strat.get("plain_english_summary")
+            if summary:
+                elements.append(Text(f"\n  Summary: {summary}", style=f"italic {GOLD}"))
 
-            legs = strat.get("legs", [])
-            if legs:
-                console.print("")
-                lt = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
-                lt.add_column("Action", style="bold")
-                lt.add_column("Type")
-                lt.add_column("Strike", justify="right")
-                lt.add_column("Expiry", style=DIM)
-                lt.add_column("Note", style=DIM)
-                for leg in legs:
-                    action_color = "green" if leg.get("action") == "BUY" else "red"
-                    lt.add_row(
-                        f"[{action_color}]{leg.get('action', '')}[/{action_color}]",
-                        leg.get("type", ""),
-                        f"${leg.get('strike', 0):.2f}",
-                        leg.get("expiry", ""),
-                        leg.get("note", ""),
-                    )
-                console.print(lt)
+        return Group(*elements)
 
-            note = strat.get("execution_note", "")
-            if note:
-                console.print(f"  [dim]{note}[/dim]")
+    def _print_options_section(self, result: dict) -> None:
+        renderable = self._get_options_renderable(result)
+        if renderable:
+            console.print(renderable)
 
-    def print_comparison(self, results: list[dict]) -> None:
-        if not results:
-            console.print("[red]No results to compare.[/red]")
-            return
-
-        # Summary row per ticker
+    def get_comparison_table(self, results: list[dict]) -> Table:
         metrics = [
             ("Score", "score", "{:.1f}"),
             ("Price", "current_price", "${:.2f}"),
@@ -590,13 +587,13 @@ class TerminalOutput:
             ("WACC", "wacc", "{:.2%}"),
         ]
 
-        t = Table(box=box.SIMPLE_HEAD, header_style=f"bold {GOLD}")
-        t.add_column("Metric")
+        t = Table(box=box.SQUARE, header_style=f"bold {GOLD}", expand=True)
+        t.add_column("Metric", ratio=2)
         for r in results:
             ticker = r.get("ticker", "?")
             name = r.get("company_name")
             col_header = f"{ticker}\n{name[:20]}" if name else ticker
-            t.add_column(col_header, justify="right")
+            t.add_column(col_header, justify="right", ratio=3)
 
         for label, key, fmt in metrics:
             row = [label]
@@ -604,139 +601,101 @@ class TerminalOutput:
                 val = r.get(key)
                 row.append(fmt.format(val) if val is not None else "—")
             t.add_row(*row)
+        return t
 
-        console.print(t)
+    def print_comparison(self, results: list[dict]) -> None:
+        if not results:
+            console.print("[red]No results to compare.[/red]")
+            return
+        console.print(self.get_comparison_table(results))
 
-    def print_help(self, config: dict) -> None:
-        from rich.padding import Padding
-
-        self.print_header()
+    def get_help_renderables(self, config: dict) -> Group:
+        """Returns a comprehensive Group of help renderables for TUI or CLI."""
+        elements = []
 
         # ── Commands ──────────────────────────────────────────────────────────
-        console.print(f"\n[bold {GOLD}]Commands[/bold {GOLD}]")
-        cmd_table = Table(box=box.SIMPLE, header_style=f"bold {GOLD}", show_header=True, pad_edge=False)
-        cmd_table.add_column("Command",  style=f"bold {GOLD}", no_wrap=True)
-        cmd_table.add_column("Usage",    style="white",        no_wrap=True)
-        cmd_table.add_column("Description")
+        elements.append(Rule("COMMANDS", style=GOLD, align="left"))
+        cmd_table = Table(box=box.SQUARE, header_style=f"bold {GOLD}", show_header=True, pad_edge=False, expand=True)
+        cmd_table.add_column("Command",  style=f"bold {GOLD}", ratio=1)
+        cmd_table.add_column("Usage",    style="white",        ratio=2)
+        cmd_table.add_column("Description", ratio=4)
 
-        cmd_table.add_row(
-            "init",
-            "sanctum init",
-            "Interactive setup: welcome message and database initialization.",
-        )
-        cmd_table.add_row(
-            "watchlist",
-            "sanctum watchlist [add|remove|list]",
-            "Manage your persistent watchlist. (e.g., 'sanctum watchlist add NVDA')",
-        )
-        cmd_table.add_row(
-            "portfolio",
-            "sanctum portfolio [add|remove|show|rebalance]",
-            "Manage your persistent portfolio. (e.g., 'sanctum portfolio add TSM 50')",
-        )
-        cmd_table.add_row(
-            "screen",
-            "sanctum screen [--tickers A,B,C]",
-            "Screen a universe. Defaults to watchlist if no tickers provided.",
-        )
-        cmd_table.add_row(
-            "analyze",
-            "sanctum analyze TICKER",
-            "Deep-dive a single stock: WACC, DCF, MC, Bayesian, and sensitivity.",
-        )
-        cmd_table.add_row(
-            "compare",
-            "sanctum compare TICK1 TICK2 ...",
-            "Side-by-side comparison of two or more stocks.",
-        )
-        cmd_table.add_row(
-            "help",
-            "sanctum help",
-            "Show this dashboard.",
-        )
-        console.print(cmd_table)
+        cmd_table.add_row("init", "sanctum init", "Initialize database and default configuration.")
+        cmd_table.add_row("watchlist", "sanctum watchlist [add|remove|list]", "Manage your persistent ticker watchlist.")
+        cmd_table.add_row("portfolio", "sanctum portfolio [add|remove|show]", "Track holdings and get rebalancing suggestions.")
+        cmd_table.add_row("screen", "sanctum screen [--tickers A,B]", "Scan a universe and rank by composite score.")
+        cmd_table.add_row("analyze", "sanctum analyze TICKER", "Deep-dive: DCF, Monte Carlo, Bayesian, and Sensitivity.")
+        cmd_table.add_row("compare", "sanctum compare T1 T2", "Side-by-side comparison of multiple tickers.")
+        elements.append(cmd_table)
 
         # ── Universe sources ──────────────────────────────────────────────────
-        console.print(f"\n[bold {GOLD}]Universe Sources[/bold {GOLD}]  "
-                      f"[dim](set via config.yaml → universe.source)[/dim]")
-        src_table = Table(box=box.SIMPLE, header_style=f"bold {GOLD}", show_header=False, pad_edge=False)
-        src_table.add_column("Source", style=f"bold white", no_wrap=True)
-        src_table.add_column("Description")
-        src_table.add_row("all_us",    "All NYSE + NASDAQ + AMEX listed common stocks (~8,000 tickers)")
-        src_table.add_row("sp500",     "S&P 500 constituents (fetched from Wikipedia)")
+        elements.append(Rule("UNIVERSE SOURCES", style=GOLD, align="left"))
+        elements.append(Text("Define the scope of 'sanctum screen'.", style=DIM))
+        src_table = Table(box=box.SQUARE, header_style=f"bold {GOLD}", show_header=False, pad_edge=False, expand=True)
+        src_table.add_column("Source", style=f"bold white", ratio=1)
+        src_table.add_column("Description", ratio=4)
+        src_table.add_row("all_us",    "Full US market (~8,000 tickers via ticker-library)")
+        src_table.add_row("sp500",     "S&P 500 constituents (live from Wikipedia)")
         src_table.add_row("nasdaq100", "Nasdaq-100 constituents")
-        src_table.add_row("custom",    "Tickers listed in universe.custom_tickers in config.yaml")
-        src_table.add_row("watchlist", "Tickers in your persistent watchlist (sanctum watchlist list)")
-        console.print(src_table)
+        src_table.add_row("watchlist", "Your persistent watchlist (managed via 'watchlist' command)")
+        src_table.add_row("custom",    "Static list defined in config.yaml")
+        elements.append(src_table)
 
         # ── Pipeline ──────────────────────────────────────────────────────────
-        console.print(f"\n[bold {GOLD}]Analysis Pipeline[/bold {GOLD}]")
-        steps = [
-            ("1  WACC",        "CAPM + optional small-cap premium. Cost of debt derived from financials."),
-            ("2  DCF",         "7-year unlevered FCF projection. Growth blends historical CAGR + sector median + analyst consensus."),
-            ("3  Monte Carlo", "10,000 simulations (log-normal revenue, antithetic variates). Reports P5–P95 + P(upside)."),
-            ("4  Bayesian",    "Sequential update on 5 evidence factors: revenue growth, gross margin, forward P/E, analyst upside, EPS surprise."),
-            ("5  E[V]",        "Expected value = P(bull)×PT_bull + P(base)×PT_base + P(bear)×PT_bear."),
-            ("6  Sensitivity", f"DCF re-run at ±{config.get('sensitivity', {}).get('revenue_delta_pct', 5)}% revenue. Reports dV/dr and asymmetry flag."),
-            ("7  Score",       "Weighted composite 0–100: Bayesian 30%, MC 25%, DCF 20%, earnings momentum 15%, margin trend 10%."),
-        ]
-        pipe_table = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
-        pipe_table.add_column("Step", style=f"bold {GOLD}", no_wrap=True)
-        pipe_table.add_column("Description")
-        for step, desc in steps:
-            pipe_table.add_row(step, desc)
-        console.print(pipe_table)
+        elements.append(Rule("ANALYSIS PIPELINE", style=GOLD, align="left"))
+        pipe_table = Table(box=box.SQUARE, show_header=False, pad_edge=False, expand=True)
+        pipe_table.add_column("Step", style=f"bold {GOLD}", ratio=1)
+        pipe_table.add_column("Description", ratio=4)
+        pipe_table.add_row("1. WACC", "CAPM-based hurdle rate with iterative cost of debt estimation.")
+        pipe_table.add_row("2. DCF", "7-year unlevered FCF projection with multi-stage growth blending.")
+        pipe_table.add_row("3. Monte Carlo", "10,000 log-normal simulations for revenue/margin volatility.")
+        pipe_table.add_row("4. Bayesian", "Probabilistic update across 5 conviction factors.")
+        pipe_table.add_row("5. Sensitivity", f"DCF stress-test at ±{config.get('sensitivity', {}).get('revenue_delta_pct', 5)}% revenue delta.")
+        pipe_table.add_row("6. Scoring", "Weighted composite: Bayesian (30%), MC (25%), DCF (20%), etc.")
+        elements.append(pipe_table)
 
         # ── Config overrides ──────────────────────────────────────────────────
-        console.print(f"\n[bold {GOLD}]On-the-fly Config Overrides[/bold {GOLD}]  "
-                      f"[dim](--set KEY=VALUE, dot-notation)[/dim]")
-        ex_table = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
-        ex_table.add_column("Example", style="white", no_wrap=True)
-        ex_table.add_column("Effect", style=DIM)
-        examples = [
-            ("--set montecarlo.n_simulations=5000",   "Reduce MC paths for speed"),
-            ("--set scoring.shortlist_threshold=70",  "Raise conviction bar"),
-            ("--set dcf.terminal_growth_rate=0.025",  "Lower terminal growth assumption"),
-            ("--set wacc.equity_risk_premium=0.06",   "Adjust ERP"),
-            ("--set output.show_math=false",          "Suppress derivation output"),
-            ("--set output.top_n=10",                 "Show only top 10 in screen"),
-        ]
-        for ex, effect in examples:
-            ex_table.add_row(f"  {ex}", effect)
-        console.print(ex_table)
+        elements.append(Rule("CLI OVERRIDES", style=GOLD, align="left"))
+        elements.append(Text("Use '--set key.path=value' to override config.yaml temporarily.", style=DIM))
+        ex_table = Table(box=box.SQUARE, show_header=False, pad_edge=False, expand=True)
+        ex_table.add_column("Example", style="white", no_wrap=True, ratio=1)
+        ex_table.add_column("Effect", style=DIM, ratio=1)
+        ex_table.add_row("  --set montecarlo.n_simulations=5000", "Faster, less precise simulations")
+        ex_table.add_row("  --set dcf.terminal_growth_rate=0.02", "Conservative terminal assumption")
+        ex_table.add_row("  --set wacc.risk_free_rate=0.045", "Manual 10Y Treasury yield override")
+        elements.append(ex_table)
 
         # ── Current config snapshot ───────────────────────────────────────────
-        console.print(f"\n[bold {GOLD}]Active Config Snapshot[/bold {GOLD}]")
-        snap_table = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
-        snap_table.add_column("Parameter", style="white", no_wrap=True)
-        snap_table.add_column("Value", style=f"{GOLD}")
+        elements.append(Rule("ACTIVE CONFIGURATION", style=GOLD, align="left"))
+        snap_table = Table(box=box.SQUARE, show_header=False, pad_edge=False, expand=True)
+        snap_table.add_column("Parameter", style="white", no_wrap=True, ratio=1)
+        snap_table.add_column("Value", style=f"{GOLD}", ratio=1)
 
         wacc_cfg = config.get("wacc", {})
         mc_cfg   = config.get("montecarlo", {})
         dcf_cfg  = config.get("dcf", {})
-        sc_cfg   = config.get("scoring", {})
-        uni_cfg  = config.get("universe", {})
+        
+        snap_table.add_row("Universe Source", str(config.get("universe", {}).get("source", "all_us")))
+        snap_table.add_row("Risk-free Rate", f"{wacc_cfg.get('risk_free_rate', 0.043):.2%}")
+        snap_table.add_row("Equity Risk Premium", f"{wacc_cfg.get('equity_risk_premium', 0.055):.2%}")
+        snap_table.add_row("Terminal Growth", f"{dcf_cfg.get('terminal_growth_rate', 0.03):.2%}")
+        snap_table.add_row("MC Sims (Analyze)", str(mc_cfg.get("n_simulations", 10000)))
+        elements.append(snap_table)
+        elements.append(Text.from_markup("\n[dim]Press any navigation key to exit help.[/dim]\n"))
 
-        snap_table.add_row("Universe source",         str(uni_cfg.get("source", "all_us")))
-        snap_table.add_row("Min market cap",          f"${uni_cfg.get('min_market_cap_B', 2)}B")
-        snap_table.add_row("Risk-free rate",          f"{wacc_cfg.get('risk_free_rate', 0.043):.1%}")
-        snap_table.add_row("Equity risk premium",     f"{wacc_cfg.get('equity_risk_premium', 0.055):.1%}")
-        snap_table.add_row("DCF projection years",    str(dcf_cfg.get("projection_years", 7)))
-        snap_table.add_row("Terminal growth rate",    f"{dcf_cfg.get('terminal_growth_rate', 0.03):.1%}")
-        snap_table.add_row("MC simulations (analyze)",str(mc_cfg.get("n_simulations", 10000)))
-        snap_table.add_row("MC simulations (screen)", str(mc_cfg.get("n_simulations_screen", 1000)))
-        snap_table.add_row("Shortlist threshold",     str(sc_cfg.get("shortlist_threshold", 60)))
-        snap_table.add_row("Top N shown",             str(config.get("output", {}).get("top_n", 20)))
-        console.print(snap_table)
-        console.print()
+        return Group(*elements)
 
-    def print_portfolio(self, holdings: dict, scored: list[dict], suggestions: list[dict]) -> None:
-        console.print(f"\n[bold {GOLD}]Current Portfolio[/bold {GOLD}]")
-        t = Table(box=box.SIMPLE_HEAD, header_style=f"bold {GOLD}")
-        t.add_column("Ticker")
-        t.add_column("Shares", justify="right")
-        t.add_column("Score", justify="right")
-        t.add_column("Upside", justify="right")
+    def print_help(self, config: dict) -> None:
+        self.print_header()
+        console.print(self.get_help_renderables(config))
+
+
+    def get_portfolio_renderable(self, holdings: dict, scored: list[dict], suggestions: list[dict]) -> Group:
+        t = Table(box=box.SQUARE, header_style=f"bold {GOLD}", expand=True)
+        t.add_column("Ticker", ratio=1)
+        t.add_column("Shares", justify="right", ratio=1)
+        t.add_column("Score", justify="right", ratio=1)
+        t.add_column("Upside", justify="right", ratio=1)
 
         scored_map = {r["ticker"]: r for r in scored}
         for ticker, shares in holdings.items():
@@ -747,9 +706,126 @@ class TerminalOutput:
                 f"{r.get('score', 0):.1f}" if r else "—",
                 f"{r.get('dcf_upside_pct', 0):+.1f}%" if r else "—",
             )
-        console.print(t)
+        
+        elements = [Text("\nCurrent Portfolio", style=f"bold {GOLD}"), t]
 
         if suggestions:
-            console.print(f"\n[bold]Rebalancing Suggestions[/bold]")
+            elements.append(Text("\nRebalancing Suggestions", style="bold"))
             for s in suggestions:
-                console.print(f"  {s['action']:8s} {s['ticker']}  {s.get('reason', '')}")
+                elements.append(Text(f"  {s['action']:8s} {s['ticker']}  {s.get('reason', '')}"))
+        
+        return Group(*elements)
+
+    def print_portfolio(self, holdings: dict, scored: list[dict], suggestions: list[dict]) -> None:
+        console.print(self.get_portfolio_renderable(holdings, scored, suggestions))
+
+    def get_analysis_tui(self, result: dict) -> Group:
+        """
+        Compact analysis view for TUI display — fits in a fixed-height panel.
+        The full math breakdown is available via: sanctum analyze <ticker>
+        """
+        ticker    = result.get("ticker", "?")
+        name      = result.get("company_name", "")
+        score     = result.get("score", 0.0)
+        cscore    = result.get("catalyst_score", 50.0)
+        archetype = result.get("trade_archetype", "")
+
+        header = Text.from_markup(
+            f"[bold {GOLD}]{ticker}[/bold {GOLD}]"
+            + (f"  [dim]{name}[/dim]" if name else "")
+        )
+        arch_text = Text(f"  {archetype}", style="dim") if archetype else None
+
+        # Left column: key valuation metrics
+        left = Table(box=box.SQUARE, show_header=False, pad_edge=False, expand=True)
+        left.add_column("Label", style=DIM, no_wrap=True, ratio=1)
+        left.add_column("Value", no_wrap=True, ratio=1)
+
+        price      = result.get("current_price")
+        dcf_price  = result.get("dcf_implied_price")
+        dcf_up     = result.get("dcf_upside_pct")
+        mc_p50     = result.get("mc_p50")
+        ev         = result.get("expected_value")
+        bull       = result.get("bayesian_bull_prob")
+        base       = result.get("bayesian_base_prob")
+        bear       = result.get("bayesian_bear_prob")
+        wacc_val   = result.get("wacc")
+        implied_h  = result.get("implied_hurdle_rate")
+        duration   = result.get("sensitivity_detail", {}).get("dV_dwacc_pct")
+
+        left.add_row("Fund. Score", Text(f"{score:.1f}", style=_score_color(score)))
+        left.add_row("Catalyst",    Text(f"{cscore:.1f}", style=_score_color(cscore)))
+        left.add_row("Price",       f"${price:.2f}" if price else "—")
+        left.add_row(
+            "DCF Implied",
+            f"${dcf_price:.2f}  ({dcf_up:+.1f}%)" if dcf_price and dcf_up is not None else "—"
+        )
+        left.add_row("MC P50",  f"${mc_p50:.2f}" if mc_p50 else "—")
+        left.add_row("E[V]",    f"${ev:.2f}"    if ev     else "—")
+        left.add_row(
+            "Bull/Base/Bear",
+            f"{bull*100:.0f}% / {base*100:.0f}% / {bear*100:.0f}%"
+            if bull is not None else "—"
+        )
+        left.add_row("WACC / Implied", f"{wacc_val*100:.1f}% / {implied_h*100:.1f}%" if wacc_val and implied_h else "—")
+        left.add_row("Duration (Rate)", f"{duration:.1f}% / 100bps" if duration is not None else "—")
+
+        # Right column: score component breakdown
+        right = Table(box=box.SQUARE, show_header=False, pad_edge=False, expand=True)
+        right.add_column("Component", style=DIM, no_wrap=True, ratio=1)
+        right.add_column("Score", justify="right", no_wrap=True, ratio=1)
+
+        components = result.get("score_components", {})
+        for key, label in [
+            ("bayesian_upside",  "Bayesian"),
+            ("mc_upside",        "Monte Carlo"),
+            ("dcf_upside",       "DCF"),
+            ("earnings_momentum","Earnings Mom."),
+            ("sentiment_score",  "Sentiment"),
+            ("margin_trend",     "Margin Trend"),
+        ]:
+            v = components.get(key)
+            if v is not None:
+                right.add_row(label, Text(f"{v:.0f}", style=_score_color(v)))
+
+        columns = Columns([left, right], expand=True)
+
+        elements: list = [header]
+        if arch_text:
+            elements.append(arch_text)
+        elements.append(columns)
+
+        # Surface important DCF notes (warnings only)
+        dcf_detail = result.get("dcf_detail") or {}
+        for note in (dcf_detail.get("notes") or []):
+            if "WARNING" in note or "Negative" in note:
+                elements.append(Text(f"  ⚠  {note[:90]}", style="yellow"))
+
+        # Options summary line
+        opts = result.get("options_analysis")
+        if opts:
+            regime = opts.get("iv_regime", "normal")
+            regime_color = {"high": "red", "low": "green", "normal": GOLD}.get(regime, GOLD)
+            atm_iv = opts.get("atm_iv", 0)
+            dte    = opts.get("dte", 0)
+            strat  = opts.get("strategy") or {}
+            line   = (
+                f"  Options: [{regime_color}]IV {atm_iv*100:.0f}% ({regime})[/{regime_color}]"
+                f"  {dte}DTE"
+            )
+            if strat.get("name"):
+                line += f"  → {strat['name']}"
+            elements.append(Text.from_markup(line))
+            warning = opts.get("earnings_warning")
+            if warning:
+                elements.append(Text(f"  ⚠  {warning}", style="bold yellow"))
+
+        # Model errors (brief)
+        errors = result.get("errors") or []
+        for err in errors[:2]:
+            elements.append(Text(f"  ✗ {err}", style="dim red"))
+
+        elements.append(Text.from_markup(
+            f"\n  [dim]Full math: sanctum analyze {ticker}[/dim]"
+        ))
+        return Group(*elements)

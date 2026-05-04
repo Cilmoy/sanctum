@@ -20,19 +20,17 @@ from data.cache import SanctumDB
 
 logger = logging.getLogger(__name__)
 
-_FETCH_WORKERS = 3          # concurrent yfinance requests (keep low to avoid 429s)
-_RETRY_ATTEMPTS = 3         # retries on transient / rate-limit errors
-_RETRY_BASE_DELAY = 3.0     # seconds for first retry; doubles each attempt
-
+_FETCH_WORKERS = 10         # concurrent stocks
+_INTERNAL_WORKERS = 6       # concurrent attributes per stock
+_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY = 3.0
 
 class _RateLimiter:
     """
     Shared token-bucket rate limiter for all worker threads.
-
-    Enforces a minimum gap between successive yfinance requests regardless of
-    how many threads are running. Jitter prevents thundering-herd retries.
+    Tuned for higher throughput without triggering blocks.
     """
-    def __init__(self, min_interval: float = 0.5, jitter: float = 0.35):
+    def __init__(self, min_interval: float = 0.1, jitter: float = 0.1):
         self._min_interval = min_interval
         self._jitter = jitter
         self._lock = threading.Lock()
@@ -46,16 +44,12 @@ class _RateLimiter:
                 time.sleep(gap + random.uniform(0.0, self._jitter))
             self._last = time.monotonic()
 
-
-_rate_limiter = _RateLimiter(min_interval=0.5, jitter=0.35)
+_rate_limiter = _RateLimiter(min_interval=0.1, jitter=0.1)
 
 
 def _yf_call(fn):
     """
     Execute a yfinance call with rate-limiting and exponential-backoff retry.
-
-    Retries on 429 / connection errors up to _RETRY_ATTEMPTS times.
-    Other exceptions propagate immediately.
     """
     last_exc = None
     for attempt in range(_RETRY_ATTEMPTS):
@@ -64,13 +58,10 @@ def _yf_call(fn):
             return fn()
         except Exception as e:
             msg = str(e).lower()
-            is_rate = any(k in msg for k in ["429", "rate limit", "too many", "connection"])
+            is_rate = any(k in msg for k in ["429", "rate limit", "too many", "connection", "read timeout"])
             if is_rate:
                 delay = _RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0.0, 1.0)
-                logger.warning(
-                    f"yfinance rate-limited / connection error — "
-                    f"retrying in {delay:.1f}s (attempt {attempt + 1}/{_RETRY_ATTEMPTS}): {e}"
-                )
+                logger.warning(f"yfinance retry {attempt + 1}/{_RETRY_ATTEMPTS} after {delay:.1f}s: {e}")
                 time.sleep(delay)
                 last_exc = e
             else:
@@ -128,6 +119,15 @@ class StockData:
         self.week_52_low: Optional[float] = None
         self.dividend_yield: Optional[float] = None   # decimal, e.g. 0.015 = 1.5%
         self.short_ratio: Optional[float] = None       # days to cover
+
+        # Alpha Pipeline Extras (Finviz / Technicals)
+        self.relative_volume: Optional[float] = None
+        self.rsi_14: Optional[float] = None
+        self.volatility_week: Optional[float] = None
+        self.volatility_month: Optional[float] = None
+        self.bbw: Optional[float] = None
+        self.is_squeeze: Optional[bool] = None
+        self.squeeze_percentile: Optional[float] = None
 
         # Currency metadata
         self.financial_currency: Optional[str] = None
@@ -219,6 +219,13 @@ class StockData:
             "week_52_low": _clean(self.week_52_low),
             "dividend_yield": _clean(self.dividend_yield),
             "short_ratio": _clean(self.short_ratio),
+            "relative_volume": _clean(self.relative_volume),
+            "rsi_14": _clean(self.rsi_14),
+            "volatility_week": _clean(self.volatility_week),
+            "volatility_month": _clean(self.volatility_month),
+            "bbw": _clean(self.bbw),
+            "is_squeeze": self.is_squeeze,
+            "squeeze_percentile": _clean(self.squeeze_percentile),
             "financial_currency": self.financial_currency,
             "price_currency": self.price_currency,
             "fx_rate_applied": _clean(self.fx_rate_applied),
@@ -271,6 +278,13 @@ class StockData:
         stock.week_52_low = d.get("week_52_low")
         stock.dividend_yield = d.get("dividend_yield")
         stock.short_ratio = d.get("short_ratio")
+        stock.relative_volume = d.get("relative_volume")
+        stock.rsi_14 = d.get("rsi_14")
+        stock.volatility_week = d.get("volatility_week")
+        stock.volatility_month = d.get("volatility_month")
+        stock.bbw = d.get("bbw")
+        stock.is_squeeze = d.get("is_squeeze")
+        stock.squeeze_percentile = d.get("squeeze_percentile")
         stock.financial_currency = d.get("financial_currency")
         stock.price_currency = d.get("price_currency")
         stock.fx_rate_applied = d.get("fx_rate_applied")
@@ -327,34 +341,36 @@ class DataFetcher:
 
         return data
 
-    def fetch_bulk(self, tickers: list[str]) -> list[StockData]:
-        """Fetch data for multiple tickers concurrently."""
-        from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+    def fetch_bulk(
+        self,
+        tickers: list[str],
+        on_ticker_complete=None,
+    ) -> list[StockData]:
+        """
+        Fetch data for multiple tickers concurrently.
 
+        on_ticker_complete : optional callable(ticker: str, index: int, total: int)
+            Called after each ticker completes (success or fail).
+        """
         results: dict[str, Optional[StockData]] = {}
+        total = len(tickers)
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            TimeElapsedColumn(),
-        ) as progress:
-            task = progress.add_task("Fetching data...", total=len(tickers))
-
-            with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as executor:
-                future_to_ticker = {
-                    executor.submit(self.fetch_single, ticker): ticker
-                    for ticker in tickers
-                }
-                for future in as_completed(future_to_ticker):
-                    ticker = future_to_ticker[future]
-                    try:
-                        results[ticker] = future.result()
-                    except Exception as e:
-                        logger.warning(f"{ticker}: unexpected error in fetch — {e}")
-                        results[ticker] = None
-                    progress.advance(task)
+        with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as executor:
+            future_to_ticker = {
+                executor.submit(self.fetch_single, ticker): ticker
+                for ticker in tickers
+            }
+            
+            for i, future in enumerate(as_completed(future_to_ticker), 1):
+                ticker = future_to_ticker[future]
+                try:
+                    results[ticker] = future.result()
+                except Exception as e:
+                    logger.warning(f"{ticker}: unexpected error in fetch — {e}")
+                    results[ticker] = None
+                
+                if on_ticker_complete:
+                    on_ticker_complete(ticker, i, total)
 
         # Preserve original order, drop failures
         output = []
@@ -369,7 +385,24 @@ class DataFetcher:
     def _fetch_from_yfinance(self, ticker: str, yticker=None) -> Optional[StockData]:
         if yticker is None:
             yticker = yf.Ticker(ticker)
-        info = _yf_call(lambda: yticker.info) or {}
+
+        # ── Parallelized Attribute Fetching ───────────────────────────────────
+        # FIRE: Start all network requests in parallel
+        with ThreadPoolExecutor(max_workers=_INTERNAL_WORKERS) as executor:
+            f_info = executor.submit(_yf_call, lambda: yticker.info)
+            f_inc  = executor.submit(_yf_call, lambda: yticker.financials)
+            f_bal  = executor.submit(_yf_call, lambda: yticker.balance_sheet)
+            f_cf   = executor.submit(_yf_call, lambda: yticker.cashflow)
+            f_eh   = executor.submit(_yf_call, lambda: yticker.earnings_history)
+            f_news = executor.submit(_yf_call, lambda: yticker.news)
+
+            # COLLECT: Wait for all results
+            info     = f_info.result() or {}
+            income   = f_inc.result()
+            balance  = f_bal.result()
+            cashflow = f_cf.result()
+            earnings = f_eh.result()
+            news_raw = f_news.result()
 
         if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
             logger.warning(f"{ticker}: no price data available")
@@ -406,10 +439,6 @@ class DataFetcher:
 
         # ── Financials ──
         try:
-            income   = _yf_call(lambda: yticker.financials)
-            balance  = _yf_call(lambda: yticker.balance_sheet)
-            cashflow = _yf_call(lambda: yticker.cashflow)
-
             if income is not None and not income.empty:
                 stock.revenue = _extract_row(income, ["Total Revenue"])
                 stock.gross_profit = _extract_row(income, ["Gross Profit"])
@@ -427,15 +456,11 @@ class DataFetcher:
                 capex = _extract_row(cashflow, ["Capital Expenditure", "Purchase Of Plant And Equipment"])
                 if op_cf and capex:
                     min_len = min(len(op_cf), len(capex))
-                    stock.fcf = [op_cf[i] + capex[i] for i in range(min_len)]  # capex is negative
+                    stock.fcf = [op_cf[i] + capex[i] for i in range(min_len)]
         except Exception as e:
             logger.warning(f"{ticker}: financials parse error — {e}")
 
         # ── Currency metadata and FX conversion ──────────────────────────────
-        # For foreign ADRs (e.g. TSM: financials in TWD, price in USD), yfinance
-        # returns statement data in the local currency while current_price and
-        # market_cap are in the trading currency. Without conversion the DCF
-        # sees revenue denominated in TWD (trillions) as if it were USD.
         fin_currency = info.get("financialCurrency") or "USD"
         price_currency = info.get("currency") or "USD"
         stock.financial_currency = fin_currency
@@ -450,27 +475,17 @@ class DataFetcher:
                     f"{ticker}: FX conversion {fin_currency}→{price_currency} "
                     f"@ {fx:.6f} applied to all statement data"
                 )
-            else:
-                logger.warning(
-                    f"{ticker}: currency mismatch {fin_currency}/{price_currency} "
-                    f"but FX rate unavailable — statement data NOT converted. "
-                    "DCF/WACC results will be unreliable."
-                )
 
-        # ── Earnings history — surprise + beat streak + acceleration ──────────
+        # ── Earnings history ──
         try:
-            earnings = _yf_call(lambda: yticker.earnings_history)
             if earnings is not None and not earnings.empty and "surprisePercent" in earnings.columns:
                 sorted_e = earnings.sort_index(ascending=False)
                 stock.eps_surprise_pct = float(sorted_e.iloc[0]["surprisePercent"])
                 surprises = sorted_e["surprisePercent"].dropna().tolist()[:8]
-                # Beat streak: consecutive quarters with positive surprise
                 streak = 0
                 for s in surprises:
-                    if float(s) > 0:
-                        streak += 1
-                    else:
-                        break
+                    if float(s) > 0: streak += 1
+                    else: break
                 stock.earnings_beat_streak = streak
                 if len(surprises) >= 2:
                     stock.earnings_beat_avg_pct = float(sum(surprises[:4]) / min(len(surprises[:4]), 4))
@@ -481,10 +496,10 @@ class DataFetcher:
 
         # ── News sentiment ──
         try:
-            from data.sentiment import fetch_news_sentiment
-            stock.news_sentiment = fetch_news_sentiment(yticker, ticker)
+            from data.sentiment import process_news_data
+            stock.news_sentiment = process_news_data(news_raw, ticker)
         except Exception as e:
-            logger.debug(f"{ticker}: news sentiment unavailable — {e}")
+            logger.debug(f"{ticker}: news sentiment failed — {e}")
 
         return stock
 
@@ -571,6 +586,28 @@ class DataFetcher:
                         )
         except Exception as e:
             logger.debug(f"{ticker}: insider transactions unavailable — {e}")
+
+        # ── Finviz Alpha Pipeline Scraper (Fallback/Supplement) ────────────────
+        try:
+            from data.finviz_scraper import fetch_finviz_data
+            fv = fetch_finviz_data(ticker)
+            
+            # Use Finviz as primary for Alpha Pipeline specific fields
+            stock.relative_volume = fv.get("relative_volume")
+            stock.rsi_14 = fv.get("rsi_14")
+            stock.volatility_week = fv.get("volatility_week")
+            stock.volatility_month = fv.get("volatility_month")
+            
+            # Use Finviz as fallback for short interest / insider buying if yf failed
+            if stock.short_pct_float is None:
+                stock.short_pct_float = fv.get("short_pct_float")
+            
+            if (stock.insider_buys_60d or 0) == 0:
+                stock.insider_buys_60d = fv.get("insider_buys_60d", 0)
+                stock.insider_buy_value_60d = fv.get("insider_buy_value_60d", 0.0)
+                
+        except Exception as e:
+            logger.debug(f"{ticker}: Finviz scraper failed — {e}")
 
 
 def _get_fx_rate(from_currency: str, to_currency: str) -> Optional[float]:

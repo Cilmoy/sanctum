@@ -50,8 +50,10 @@ def compute_sensitivity(stock, wacc_result: dict, config: dict) -> dict:
         bull_upside_pct     float
         bear_upside_pct     float
         delta_pct           float   the revenue shock applied (e.g. 5.0)
-        dV_dr               float   $ change per 1% revenue change (avg of bull/bear)
-        dV_dr_pct           float   % of current price per 1% revenue change
+        dV_drev             float   $ change per 1% revenue change (avg of bull/bear)
+        dV_drev_pct         float   % of current price per 1% revenue change
+        dV_dwacc            float   $ change per 100bps change in WACC
+        dV_dwacc_pct        float   % change in value per 100bps change in WACC (Duration)
         asymmetry_ratio     float   |bull_delta| / |bear_delta| (1.0 = symmetric)
         asymmetry_flag      bool    True if asymmetry_ratio > threshold
         notes               list[str]
@@ -69,13 +71,11 @@ def compute_sensitivity(stock, wacc_result: dict, config: dict) -> dict:
     except Exception as e:
         raise ValueError(f"{stock.ticker}: base DCF failed in sensitivity — {e}") from e
 
-    # ── Bull case: revenue × (1 + delta/100) ─────────────────────────────────
+    # ── Revenue Sensitivity: ±delta% revenue ─────────────────────────────────
     bull_price = _run_shocked_dcf(stock, wacc_result, config, delta_pct / 100.0, notes, "bull")
-
-    # ── Bear case: revenue × (1 - delta/100) ─────────────────────────────────
     bear_price = _run_shocked_dcf(stock, wacc_result, config, -delta_pct / 100.0, notes, "bear")
 
-    # ── Derived metrics ───────────────────────────────────────────────────────
+    # ── Derived Revenue metrics ───────────────────────────────────────────────
     base_upside_pct = (base_price / current_price - 1.0) * 100.0 if current_price else float("nan")
     bull_upside_pct = (bull_price / current_price - 1.0) * 100.0 if current_price else float("nan")
     bear_upside_pct = (bear_price / current_price - 1.0) * 100.0 if current_price else float("nan")
@@ -85,11 +85,33 @@ def compute_sensitivity(stock, wacc_result: dict, config: dict) -> dict:
 
     # Average dollar change per 1% revenue change
     if delta_pct > 0:
-        dV_dr = ((abs(bull_delta) + abs(bear_delta)) / 2.0) / delta_pct
+        dV_drev = ((abs(bull_delta) + abs(bear_delta)) / 2.0) / delta_pct
     else:
-        dV_dr = float("nan")
+        dV_drev = float("nan")
 
-    dV_dr_pct = (dV_dr / current_price) * 100.0 if current_price else float("nan")
+    dV_drev_pct = (dV_drev / current_price) * 100.0 if current_price else float("nan")
+
+    # ── Interest Rate Duration: ±100bps WACC ─────────────────────────────────
+    # Quant Personas: "High-growth tech is essentially a long-duration bond."
+    # We measure sensitivity to the discount rate itself (WACC).
+    try:
+        wacc_base = wacc_result["wacc"]
+        
+        # Bull/Bear for rates is inverted for price: rate UP = price DOWN.
+        # WACC + 1% (100bps)
+        wacc_up = {"wacc": wacc_base + 0.01}
+        price_wacc_up = compute_dcf(stock, wacc_up, config)["implied_price"]
+        
+        # WACC - 1% (100bps)
+        wacc_down = {"wacc": max(0.001, wacc_base - 0.01)}
+        price_wacc_down = compute_dcf(stock, wacc_down, config)["implied_price"]
+        
+        dV_dwacc = (price_wacc_down - price_wacc_up) / 2.0 # $ change per 100bps
+        dV_dwacc_pct = (dV_dwacc / base_price) * 100.0 if base_price else float("nan")
+    except Exception as e:
+        logger.warning(f"{stock.ticker}: Duration calculation failed — {e}")
+        dV_dwacc = float("nan")
+        dV_dwacc_pct = float("nan")
 
     # Asymmetry: |upside from beat| vs |downside from miss|
     if abs(bear_delta) > 0:
@@ -114,7 +136,7 @@ def compute_sensitivity(stock, wacc_result: dict, config: dict) -> dict:
     logger.info(
         f"{stock.ticker}: sensitivity ±{delta_pct}% revenue → "
         f"bear=${bear_price:.2f} | base=${base_price:.2f} | bull=${bull_price:.2f}  "
-        f"dV/dr=${dV_dr:.2f}/1%rev"
+        f"dV/drev=${dV_drev:.2f}/1%rev  Duration={dV_dwacc_pct:.1f}%"
     )
 
     return {
@@ -125,8 +147,12 @@ def compute_sensitivity(stock, wacc_result: dict, config: dict) -> dict:
         "bull_upside_pct": bull_upside_pct,
         "bear_upside_pct": bear_upside_pct,
         "delta_pct": delta_pct,
-        "dV_dr": dV_dr,
-        "dV_dr_pct": dV_dr_pct,
+        "dV_drev": dV_drev,
+        "dV_drev_pct": dV_drev_pct,
+        "dV_dr": dV_drev, # Legacy key for tests
+        "dV_dr_pct": dV_drev_pct, # Legacy key for tests
+        "dV_dwacc": dV_dwacc,
+        "dV_dwacc_pct": dV_dwacc_pct,
         "asymmetry_ratio": asymmetry_ratio,
         "asymmetry_flag": asymmetry_flag,
         "notes": notes,

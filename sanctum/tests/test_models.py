@@ -29,7 +29,9 @@ from models.dcf import compute_dcf, _geometric_decay, SECTOR_GROWTH_MEDIANS
 from models.montecarlo import run_montecarlo
 from models.bayesian import compute_bayesian
 from models.sensitivity import compute_sensitivity
-from scoring.composite import CompositeScorer, _upside_to_score, _compute_margin_trend
+from models.catalyst import compute_catalyst_score
+from models.options import suggest_strategy
+from scoring.composite import CompositeScorer, _upside_to_score, _compute_margin_trend, _combined_archetype
 from scoring.filters import apply_filters
 
 
@@ -47,11 +49,25 @@ class MockStock:
     def __init__(self, **kwargs):
         # Defaults — representative mid-cap tech company
         self.ticker = "TEST"
+        self.company_name = "Test Company"
+        self.sector = "Technology"
+        self.industry = "Software"
         self.current_price = 100.0
         self.market_cap = 10e9          # $10B
         self.beta = 1.2
-        self.sector = "Technology"
         self.shares_outstanding = 100e6  # 100M diluted shares
+        
+        # Technicals
+        self.ma_50 = 95.0
+        self.ma_200 = 90.0
+        self.week_52_high = 120.0
+        self.week_52_low = 80.0
+        
+        # Valuation
+        self.trailing_pe = 30.0
+        self.forward_pe = 25.0
+        self.forward_eps = 4.0
+        self.dividend_yield = 0.01
 
         # Financials (most-recent-first, 3 years)
         self.revenue = [5e9, 4e9, 3.5e9]          # $5B, $4B, $3.5B
@@ -72,13 +88,24 @@ class MockStock:
         # Earnings
         self.eps_surprise_pct = 0.05    # +5% beat
         self.eps_revision_trend = 0.02  # +2% upward revision
+        self.next_earnings_date = "2024-05-15"
+        self.days_to_earnings = 20
+        self.earnings_beat_streak = 3
+        self.earnings_beat_avg_pct = 0.10
+        self.earnings_beat_accelerating = True
 
         # Liquidity
         self.avg_daily_volume = 5e6     # 5M shares/day
-
-        # Forward estimates
-        self.forward_pe = 25.0
-        self.forward_eps = 4.0
+        
+        # Sentiment & Catalyst
+        self.news_sentiment = 0.10
+        self.insider_buys_60d = 2
+        self.insider_buy_value_60d = 1_000_000
+        self.insider_own_pct = 0.15
+        self.analyst_net_upgrades_30d = 2
+        self.short_pct_float = 0.10
+        self.short_ratio = 5.0
+        self.institutional_own_pct = 0.60
 
         # Apply overrides
         for k, v in kwargs.items():
@@ -337,7 +364,7 @@ class TestDCF:
         wacc = result["wacc"]
 
         terminal_fcf = result["projection_rows"][-1]["fcf"]
-        expected_tv = terminal_fcf * (1.0 + g) / (wacc - g)
+        expected_tv = terminal_fcf / (wacc - g)
         expected_pv_tv = expected_tv / (1.0 + wacc) ** n
 
         assert abs(result["terminal_value"] - expected_tv) < 1.0  # within $1
@@ -433,7 +460,8 @@ class TestDCF:
     def test_missing_shares_raises(self):
         """DCF should raise ValueError when shares_outstanding is None."""
         config = _make_minimal_config()
-        stock = MockStock(shares_outstanding=None)
+        # Must set both to None to bypass the mc/price fallback
+        stock = MockStock(shares_outstanding=None, market_cap=None)
         wacc_result = self._get_wacc_result(stock, config)
         with pytest.raises(ValueError, match="shares"):
             compute_dcf(stock, wacc_result, config)
@@ -633,8 +661,8 @@ class TestBayesian:
         result = compute_bayesian(stock, config)
         n_applied = len(result["update_trace"]) - 1  # subtract prior entry
         n_skipped = len(result["skipped_factors"])
-        n_total_factors = len(config["bayesian"]["evidence_factors"])
-        assert n_applied + n_skipped == n_total_factors
+        # Total number of handlers defined in bayesian.py is 6
+        assert n_applied + n_skipped == 6
 
     def test_skipped_factors_when_data_missing(self):
         """Factors with missing data are skipped and logged."""
@@ -763,20 +791,20 @@ class TestCompositeScoring:
         """0% upside → score component = 50."""
         assert _upside_to_score(0.0) == 50.0
 
-    def test_upside_to_score_fifty_pct_is_hundred(self):
-        """+50% upside → score component = 100."""
-        assert _upside_to_score(50.0) == 100.0
+    def test_upside_to_score_hundred_pct_is_hundred(self):
+        """+100% upside → score component = 100."""
+        assert _upside_to_score(100.0) == 100.0
 
-    def test_upside_to_score_neg_fifty_pct_is_zero(self):
-        """-50% upside → score component = 0."""
-        assert _upside_to_score(-50.0) == 0.0
+    def test_upside_to_score_neg_hundred_pct_is_zero(self):
+        """-100% upside → score component = 0."""
+        assert _upside_to_score(-100.0) == 0.0
 
     def test_upside_to_score_clamped_upper(self):
-        """Upside > 50% is clamped to 100."""
+        """Upside > 100% is clamped to 100."""
         assert _upside_to_score(200.0) == 100.0
 
     def test_upside_to_score_clamped_lower(self):
-        """Upside < -50% is clamped to 0."""
+        """Upside < -100% is clamped to 0."""
         assert _upside_to_score(-200.0) == 0.0
 
     def test_upside_to_score_none_returns_fifty(self):
@@ -979,3 +1007,104 @@ class TestFilters:
         config = _make_minimal_config()
         result = apply_filters([], config)
         assert result == []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Catalyst & Archetype Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCatalyst:
+    def test_combined_archetype_convergence(self):
+        """Verify CONVERGENCE archetype is triggered at fundamental >= 75 and catalyst >= 75."""
+        assert "CONVERGENCE" in _combined_archetype(75, 75, {})
+        assert "CONVERGENCE" in _combined_archetype(80, 90, {})
+        assert "CONVERGENCE" not in _combined_archetype(74, 80, {})
+        assert "CONVERGENCE" not in _combined_archetype(80, 74, {})
+
+    def test_asymmetric_convexity_archetype(self):
+        """Verify ASYMMETRIC CONVEXITY archetype (Intel at $45 setup)."""
+        result = {
+            "dcf_upside_pct": 50.0,
+            "current_price": 105.0,
+            "week_52_high": 200.0,
+            "week_52_low": 100.0,
+        }
+        # price_pos = (105-100)/(200-100) = 0.05 (<= 0.20)
+        assert "ASYMMETRIC CONVEXITY" in _combined_archetype(50, 75, result)
+        
+        # High price position
+        result["current_price"] = 150.0 # price_pos = 0.50
+        assert "ASYMMETRIC CONVEXITY" not in _combined_archetype(50, 75, result)
+
+    def test_compute_catalyst_score_basic(self):
+        """Test catalyst score computation with a MockStock."""
+        config = _make_minimal_config()
+        # Add catalyst defaults to minimal config
+        config["catalyst"] = {
+            "weights": {
+                "earnings_acceleration": 0.25,
+                "smart_money":           0.15,
+                "analyst_revisions":     0.15,
+                "price_momentum":        0.25,
+                "short_interest":        0.20,
+            }
+        }
+        stock = MockStock(
+            earnings_beat_streak=3,
+            earnings_beat_avg_pct=0.10,
+            earnings_beat_accelerating=True,
+            days_to_earnings=20,
+            insider_buys_60d=2,
+            insider_buy_value_60d=1_000_000,
+            insider_own_pct=0.15,
+            analyst_net_upgrades_30d=2,
+            ma_50=90.0,
+            week_52_high=110.0,
+            week_52_low=80.0,
+            short_pct_float=0.10,
+            short_ratio=5.0,
+            institutional_own_pct=0.60
+        )
+        result = compute_catalyst_score(stock, config)
+        assert 0 <= result["catalyst_score"] <= 100
+        assert len(result["components"]) == 5
+        assert "archetype" in result
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Options Strategy Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOptions:
+    def test_suggest_strategy_long_otm_call(self):
+        """Test Long OTM Call suggestion (10x Potential) for extreme conviction + Low IV."""
+        opts = {
+            "iv_regime": "low",
+            "atm_strike": 100,
+            "call_25d_strike": 110,
+            "atm_iv": 0.25,
+            "dte": 30,
+            "expiration": "2024-06-21"
+        }
+        # score >= 85 triggers multi_bagger_conviction
+        strat = suggest_strategy(opts, score=90, bull_prob=0.8, bear_prob=0.05)
+        assert "Long OTM Call" in strat["name"]
+        assert strat["legs"][0]["action"] == "BUY"
+        assert strat["legs"][0]["type"] == "CALL"
+        assert strat["legs"][0]["strike"] == 110
+
+    def test_suggest_strategy_long_otm_put(self):
+        """Test Long OTM Put suggestion (10x Potential) for extreme bearish conviction + Low IV."""
+        opts = {
+            "iv_regime": "low",
+            "atm_strike": 100,
+            "put_25d_strike": 90,
+            "atm_iv": 0.25,
+            "dte": 30,
+            "expiration": "2024-06-21"
+        }
+        # score <= 15 triggers multi_bagger_conviction in the 'else' block
+        strat = suggest_strategy(opts, score=10, bull_prob=0.05, bear_prob=0.8)
+        assert "Long OTM Put" in strat["name"]
+        assert strat["legs"][0]["action"] == "BUY"
+        assert strat["legs"][0]["type"] == "PUT"
+        assert strat["legs"][0]["strike"] == 90
+

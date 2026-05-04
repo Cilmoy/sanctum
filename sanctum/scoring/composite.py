@@ -3,20 +3,6 @@ composite.py — Composite scoring and orchestration layer.
 
 Orchestrates WACC → DCF → Monte Carlo → Bayesian → Sensitivity for each stock
 and assembles a final scored output dict.
-
-Scoring methodology:
-  - Each component is normalized to [0, 100]:
-      upside_pct → score_component:  0% upside = 50, +50% = 100, -50% = 0
-      Formula: component = clamp(50 + upside_pct, 0, 100)
-  - margin_trend: OLS slope of gross_margin_history vs time (most-recent-last).
-    Normalized: 0 slope = 50, +2pp/year = 100, -2pp/year = 0.
-  - earnings_momentum: blend of eps_surprise_pct (60%) and eps_revision_trend (40%).
-    Each normalized independently then blended.
-  - Composite score = weighted average of components per config['scoring']['weights'].
-
-IMPORTANT: The composite score is a triage heuristic, not a model. It is a tool
-to decide what to read first. The underlying model outputs are the actual analysis.
-Never present the score as the conclusion.
 """
 
 import logging
@@ -24,7 +10,7 @@ import math
 from typing import Optional
 
 from models.wacc import compute_wacc
-from models.dcf import compute_dcf
+from models.dcf import compute_dcf, compute_implied_hurdle_rate
 from models.montecarlo import run_montecarlo
 from models.bayesian import compute_bayesian
 from models.sensitivity import compute_sensitivity
@@ -57,19 +43,10 @@ _SENTIMENT_SCALE = 0.3
 def _upside_to_score(upside_pct: Optional[float]) -> float:
     """
     Convert upside percentage to [0, 100] score component.
-
-    0% upside → 50. +50% → 100. -50% → 0. Linear interpolation, clamped.
-
-    Parameters
-    ----------
-    upside_pct : float or None
-        Upside as a percentage (e.g. 25.0 for 25%). None → returns 50.0 (neutral).
     """
     if upside_pct is None or (upside_pct != upside_pct):  # None or NaN
         return 50.0
     # Normalize over ±100% range: 0% → 50, +100% → 100, -100% → 0.
-    # Prior range (±50%) caused hard saturation on any stock with >50% model upside,
-    # destroying rank-ordering signal in deep-value or high-growth screens.
     raw = 50.0 + upside_pct / 2.0
     return float(max(0.0, min(100.0, raw)))
 
@@ -89,9 +66,6 @@ def _slope_to_score(slope: float, full_val: float, zero_val: float) -> float:
 def _compute_margin_trend(stock) -> float:
     """
     Compute OLS slope of gross_margin_history over time.
-
-    gross_margin_history is most-recent-first; we reverse to get chronological order.
-    Returns the slope (units: margin change per year). Returns 0.0 if < 2 data points.
     """
     margins = stock.gross_margin_history
     if not margins or len(margins) < 2:
@@ -102,10 +76,9 @@ def _compute_margin_trend(stock) -> float:
     n = len(y)
     x = list(range(n))
 
-    # OLS slope: sum((xi - xbar)(yi - ybar)) / sum((xi - xbar)^2)
+    # OLS slope
     xbar = sum(x) / n
     ybar = sum(y) / n
-
     num = sum((x[i] - xbar) * (y[i] - ybar) for i in range(n))
     den = sum((x[i] - xbar) ** 2 for i in range(n))
 
@@ -117,9 +90,6 @@ def _compute_margin_trend(stock) -> float:
 def _sentiment_to_score(sentiment: Optional[float]) -> float:
     """
     Map VADER compound sentiment [-1, 1] to [0, 100].
-
-    0.0 → 50 (neutral). ±_SENTIMENT_SCALE saturates to 100/0.
-    Compressed range vs upside normalization because sentiment is noisy.
     """
     if sentiment is None or (sentiment != sentiment):
         return 50.0
@@ -130,9 +100,6 @@ def _sentiment_to_score(sentiment: Optional[float]) -> float:
 def _compute_earnings_momentum(stock) -> float:
     """
     Blend eps_surprise_pct and eps_revision_trend into a single [0, 100] score.
-
-    Normalizes each component independently then applies blend weights.
-    Returns 50.0 (neutral) if both inputs are missing.
     """
     has_surprise = stock.eps_surprise_pct is not None
     has_revision = stock.eps_revision_trend is not None
@@ -153,13 +120,6 @@ def _compute_earnings_momentum(stock) -> float:
 class CompositeScorer:
     """
     Orchestrates the full model pipeline and produces composite scores.
-
-    Parameters
-    ----------
-    config : dict
-        Full application config dict.
-    mode : str
-        'analyze' for full simulation count; 'screen' for fast bulk screening.
     """
 
     def __init__(self, config: dict, mode: str = "analyze"):
@@ -170,13 +130,6 @@ class CompositeScorer:
     def score_one(self, stock) -> dict:
         """
         Run the full model pipeline for a single stock and return the result dict.
-
-        Gracefully handles model failures by setting affected fields to NaN
-        and recording the error in the 'errors' key. Never raises.
-
-        Returns
-        -------
-        dict with all keys from the output contract plus 'errors' list.
         """
         result = {
             "ticker": stock.ticker,
@@ -218,16 +171,28 @@ class CompositeScorer:
                 result["dcf_implied_price"] = dcf_result["implied_price"]
                 result["dcf_upside_pct"] = dcf_result["dcf_upside_pct"]
                 result["dcf_detail"] = dcf_result
+                
+                # ── Implied Hurdle Rate (CIO Metric) ──────────────────────────
+                irr = compute_implied_hurdle_rate(stock, self.config)
+                result["implied_hurdle_rate"] = irr
+                if irr and result["wacc"]:
+                    result["wacc_spread"] = irr - result["wacc"]
+                else:
+                    result["wacc_spread"] = float("nan")
             except Exception as e:
                 logger.error(f"{stock.ticker}: DCF failed — {e}")
                 result["errors"].append(f"dcf: {e}")
                 result["dcf_implied_price"] = float("nan")
                 result["dcf_upside_pct"] = float("nan")
                 result["dcf_detail"] = {}
+                result["implied_hurdle_rate"] = float("nan")
+                result["wacc_spread"] = float("nan")
         else:
             result["dcf_implied_price"] = float("nan")
             result["dcf_upside_pct"] = float("nan")
             result["dcf_detail"] = {}
+            result["implied_hurdle_rate"] = float("nan")
+            result["wacc_spread"] = float("nan")
 
         # ── Monte Carlo ───────────────────────────────────────────────────────
         mc_result = None
@@ -278,12 +243,16 @@ class CompositeScorer:
             try:
                 sens_result = compute_sensitivity(stock, wacc_result, self.config)
                 result["sensitivity_detail"] = sens_result
+                # Surface duration to top-level result
+                result["interest_rate_duration"] = sens_result.get("dV_dwacc_pct")
             except Exception as e:
                 logger.error(f"{stock.ticker}: Sensitivity failed — {e}")
                 result["errors"].append(f"sensitivity: {e}")
                 result["sensitivity_detail"] = {}
+                result["interest_rate_duration"] = float("nan")
         else:
             result["sensitivity_detail"] = {}
+            result["interest_rate_duration"] = float("nan")
 
         # ── Component scores ──────────────────────────────────────────────────
         margin_slope = _compute_margin_trend(stock)
@@ -343,7 +312,7 @@ class CompositeScorer:
 
         # Combined archetype using both scores
         result["trade_archetype"] = _combined_archetype(
-            result["score"], result["catalyst_score"]
+            result["score"], result["catalyst_score"], result
         )
 
         # ── Options analysis (analyze mode only — skip during bulk screen) ──────
@@ -358,6 +327,7 @@ class CompositeScorer:
                         result["score"],
                         result.get("bayesian_bull_prob", 0.25),
                         result.get("bayesian_bear_prob", 0.25),
+                        stock=stock,
                     )
                 result["options_analysis"] = opts
             except Exception as e:
@@ -368,17 +338,6 @@ class CompositeScorer:
     def score_all(self, stocks: list) -> list:
         """
         Score a list of stocks and return results sorted by score descending.
-
-        Stocks that fail entirely (e.g. no price data) are included with score=0
-        and their errors logged.
-
-        Parameters
-        ----------
-        stocks : list[StockData]
-
-        Returns
-        -------
-        list of result dicts, sorted by 'score' descending.
         """
         results = []
         for stock in stocks:
@@ -400,14 +359,27 @@ class CompositeScorer:
         return results
 
 
-def _combined_archetype(fundamental: float, catalyst: float) -> str:
+def _combined_archetype(fundamental: float, catalyst: float, result: dict) -> str:
     """
     Classify the trade setup using both scores.
-
-    Jane Street / PhD Fix: Identify 'CONVERGENCE' where deep fundamental mispricing 
-    meets extreme catalyst velocity. This is the 30%-10x zone.
     """
-    if fundamental >= 75 and catalyst >= 75:
+    # Alpha Pipeline: Asymmetric Convexity (Intel at $45 setup)
+    dcf_upside = result.get("dcf_upside_pct", 0.0)
+    price = result.get("current_price")
+    hi = result.get("week_52_high")
+    lo = result.get("week_52_low")
+    
+    is_convex = False
+    if dcf_upside >= 40.0 and price and hi and lo:
+        rng = hi - lo
+        if rng > 0:
+            price_pos = (price - lo) / rng
+            if price_pos <= 0.20 and catalyst >= 70:
+                is_convex = True
+
+    if is_convex:
+        return "ASYMMETRIC CONVEXITY — value floor + high-velocity catalyst (Alpha Setup)"
+    elif fundamental >= 75 and catalyst >= 75:
         return "CONVERGENCE — extreme mispricing + velocity (10x Potential)"
     elif fundamental >= 65 and catalyst >= 65:
         return "STRONG BUY — value + momentum aligned"

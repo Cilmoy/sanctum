@@ -15,3 +15,7 @@ sanctum/output/*.pdf
 .DS_Store
 .idea/
 .vscode/
+
+# Personas and Reviews (Private)
+*_prompt.md
+review_*.md

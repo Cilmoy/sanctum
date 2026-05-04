@@ -23,27 +23,31 @@ def fetch_news_sentiment(yticker, ticker: str) -> Optional[float]:
     Returns None if vaderSentiment is not installed or no news is found.
     """
     try:
-        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-    except ImportError:
-        logger.debug(f"{ticker}: vaderSentiment not installed; news sentiment skipped")
-        return None
-
-    try:
         news = yticker.news or []
     except Exception as e:
         logger.debug(f"{ticker}: news fetch failed — {e}")
         return None
 
+    return process_news_data(news, ticker)
+
+
+def process_news_data(news: list, ticker: str) -> Optional[float]:
+    """
+    Process raw news data (list of articles) into a mean VADER sentiment score.
+    """
     if not news:
-        logger.debug(f"{ticker}: no news articles found")
+        return None
+
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    except ImportError:
+        logger.debug(f"{ticker}: vaderSentiment not installed; news sentiment skipped")
         return None
 
     analyzer = SentimentIntensityAnalyzer()
     scores = []
 
     for article in news[:_MAX_ARTICLES]:
-        # yfinance >=0.2.40 wraps content under an inner 'content' key;
-        # older builds return fields at the top level.
         content = article.get("content", article)
         title = content.get("title", "") or ""
         summary = content.get("summary", "") or ""

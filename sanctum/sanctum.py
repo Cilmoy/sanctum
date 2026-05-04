@@ -29,6 +29,7 @@ from portfolio.manager import PortfolioManager
 from scoring.filters import apply_filters
 from scoring.composite import CompositeScorer
 from output.terminal import TerminalOutput, GOLD
+from output.tui import SanctumTUI
 
 console = Console()
 
@@ -370,10 +371,24 @@ def main() -> None:
 
     db = SanctumDB(config)
 
-    if args.help or not args.command or args.command == "help":
+    if not args.command and not args.help:
+        # Launch TUI on no args
+        try:
+            tui = SanctumTUI(config, db)
+            tui.run()
+        except Exception as e:
+            console.print(f"[bold red]TUI Crash:[/bold red] {e}")
+            if args.debug:
+                logging.exception("TUI failed")
+        finally:
+            db.close()
+        return
+
+    if args.help or args.command == "help":
         TerminalOutput(config).print_help(config)
         db.close()
         return
+
 
     cmd_map = {
         "init": cmd_init,

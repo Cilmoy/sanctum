@@ -55,6 +55,13 @@ def compute_wacc(stock, config: dict) -> dict:
     beta: float
     if stock.beta is not None:
         beta = float(stock.beta)
+        # Senior SWE / CIO Fix: Cap Beta for mega-caps to prevent 'Beta Bubbles' 
+        # (excessive volatility in AI/Tech leaders) from artificially inflating hurdle rates.
+        if stock.market_cap and stock.market_cap > 500e9:
+            if beta > 1.3:
+                notes.append(f"Beta capped at 1.3 for mega-cap monopoly (was {beta:.2f})")
+                beta = 1.3
+        
         if beta < 0:
             notes.append(f"negative beta ({beta:.3f}) retained — valid for counter-cyclical assets")
             logger.info(f"{stock.ticker}: negative beta {beta:.3f} retained in CAPM")
@@ -77,6 +84,14 @@ def compute_wacc(stock, config: dict) -> dict:
 
     # ── Cost of equity (CAPM + SCP) ───────────────────────────────────────────
     ke: float = rf + beta * erp + scp
+    
+    # Senior SWE / CIO Fix: Apply 'Moat Discount' to Cost of Equity.
+    # Structural winners with $100B+ cash/equivalents and near-monopoly positions
+    # (NVDA, GOOG, AAPL, MSFT) shouldn't be penalized by the same ERP as junk.
+    if stock.market_cap and stock.market_cap > 500e9:
+        ke -= 0.005 # -50bps discount for structural resilience
+        notes.append("Moat Premium applied: -50bps hurdle rate discount for mega-cap floor.")
+
     logger.debug(f"{stock.ticker}: Ke = {rf:.3f} + {beta:.3f}×{erp:.3f} + {scp:.3f} = {ke:.4f}")
 
     # ── Cost of debt ──────────────────────────────────────────────────────────
