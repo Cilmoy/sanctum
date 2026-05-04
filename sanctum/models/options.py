@@ -229,7 +229,7 @@ def _is_near_earnings(stock, days: int = _EARNINGS_WARNING_DAYS) -> bool:
 
 
 def _run_analysis(yticker, stock, config: dict) -> Optional[dict]:
-    from data.fetcher import _yf_call
+    from sanctum.data.fetcher import _yf_call
     try:
         expirations = _yf_call(lambda: yticker.options)
     except Exception:
@@ -384,7 +384,7 @@ def _iv_regime(iv: float, hv30: Optional[float]) -> str:
 
 def _compute_hv30(yticker, ticker: str) -> Optional[float]:
     try:
-        from data.fetcher import _yf_call
+        from sanctum.data.fetcher import _yf_call
         hist = _yf_call(lambda: yticker.history(period="45d", interval="1d"))
         if hist is None or len(hist) < 15:
             return None

@@ -9,11 +9,11 @@ import logging
 import math
 from typing import Optional
 
-from models.wacc import compute_wacc
-from models.dcf import compute_dcf, compute_implied_hurdle_rate
-from models.montecarlo import run_montecarlo
-from models.bayesian import compute_bayesian
-from models.sensitivity import compute_sensitivity
+from sanctum.models.wacc import compute_wacc
+from sanctum.models.dcf import compute_dcf, compute_implied_hurdle_rate
+from sanctum.models.montecarlo import run_montecarlo
+from sanctum.models.bayesian import compute_bayesian
+from sanctum.models.sensitivity import compute_sensitivity
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +301,7 @@ class CompositeScorer:
 
         # ── Catalyst score ────────────────────────────────────────────────────
         try:
-            from models.catalyst import compute_catalyst_score
+            from sanctum.models.catalyst import compute_catalyst_score
             catalyst = compute_catalyst_score(stock, self.config)
             result["catalyst_score"] = catalyst["catalyst_score"]
             result["catalyst_detail"] = catalyst
@@ -319,7 +319,7 @@ class CompositeScorer:
         result["options_analysis"] = None
         if self.mode == "analyze":
             try:
-                from models.options import analyze_options, suggest_strategy
+                from sanctum.models.options import analyze_options, suggest_strategy
                 opts = analyze_options(stock, self.config)
                 if opts:
                     opts["strategy"] = suggest_strategy(

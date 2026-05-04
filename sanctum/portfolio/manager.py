@@ -3,7 +3,7 @@ manager.py — Portfolio manager for persistent storage.
 """
 
 from typing import List, Dict
-from data.cache import SanctumDB
+from sanctum.data.cache import SanctumDB
 
 class PortfolioManager:
     def __init__(self, db: SanctumDB):

@@ -31,12 +31,12 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-from data.fetcher import DataFetcher
-from data.watchlist import WatchlistManager
-from output.terminal import DIM, GOLD, TerminalOutput
-from portfolio.manager import PortfolioManager
-from scoring.composite import CompositeScorer
-from scoring.filters import apply_filters
+from sanctum.data.fetcher import DataFetcher
+from sanctum.data.watchlist import WatchlistManager
+from sanctum.output.terminal import DIM, GOLD, TerminalOutput
+from sanctum.portfolio.manager import PortfolioManager
+from sanctum.scoring.composite import CompositeScorer
+from sanctum.scoring.filters import apply_filters
 
 # Pre-compiled ticker regex for zero-allocation extraction
 _TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b")
@@ -615,13 +615,13 @@ class SanctumTUI:
         if source == "watchlist":
             tickers = WatchlistManager(self.db).list()
         elif source == "sp500":
-            from data.fetcher import fetch_sp500_tickers
+            from sanctum.data.fetcher import fetch_sp500_tickers
             tickers = fetch_sp500_tickers()
         elif source == "nasdaq100":
-            from data.fetcher import fetch_nasdaq100_tickers
+            from sanctum.data.fetcher import fetch_nasdaq100_tickers
             tickers = fetch_nasdaq100_tickers()
         elif source == "all_us":
-            from data.fetcher import fetch_all_us_tickers
+            from sanctum.data.fetcher import fetch_all_us_tickers
             tickers = fetch_all_us_tickers()
         elif source == "custom":
             tickers = self.config.get("universe", {}).get("custom_tickers", [])
@@ -747,7 +747,7 @@ class SanctumTUI:
             fetcher = DataFetcher(self.config, db=self.db)
             scorer = CompositeScorer(self.config)
             scored = [scorer.score_one(fetcher.fetch_single(t)) for t in holdings]
-            from portfolio.rebalance import suggest_rebalance
+            from sanctum.portfolio.rebalance import suggest_rebalance
             self.portfolio_data = {"holdings": holdings, "scored": scored, "suggestions": suggest_rebalance(holdings, scored, self.config)}
             self.status_message = "Done"
             self._needs_refresh = True

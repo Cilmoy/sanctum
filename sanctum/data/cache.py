@@ -66,7 +66,7 @@ class SanctumDB:
 
     def get(self, ticker: str) -> Optional[object]:
         """Return cached StockData if present and not expired, else None."""
-        from data.fetcher import StockData
+        from sanctum.data.fetcher import StockData
 
         with self._lock:
             row = self.conn.execute(

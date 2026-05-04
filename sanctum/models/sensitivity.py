@@ -19,7 +19,7 @@ Key assumptions:
 import logging
 from typing import Optional
 
-from models.dcf import compute_dcf
+from sanctum.models.dcf import compute_dcf
 
 logger = logging.getLogger(__name__)
 

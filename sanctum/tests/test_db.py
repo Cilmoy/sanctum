@@ -2,7 +2,7 @@ import os
 import time
 import pytest
 from pathlib import Path
-from data.cache import SanctumDB
+from sanctum.data.cache import SanctumDB
 
 class MockStockData:
     def __init__(self, ticker, price):

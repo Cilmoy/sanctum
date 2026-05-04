@@ -24,15 +24,15 @@ _SANCTUM_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _SANCTUM_ROOT not in sys.path:
     sys.path.insert(0, _SANCTUM_ROOT)
 
-from models.wacc import compute_wacc
-from models.dcf import compute_dcf, _geometric_decay, SECTOR_GROWTH_MEDIANS
-from models.montecarlo import run_montecarlo
-from models.bayesian import compute_bayesian
-from models.sensitivity import compute_sensitivity
-from models.catalyst import compute_catalyst_score
-from models.options import suggest_strategy
-from scoring.composite import CompositeScorer, _upside_to_score, _compute_margin_trend, _combined_archetype
-from scoring.filters import apply_filters
+from sanctum.models.wacc import compute_wacc
+from sanctum.models.dcf import compute_dcf, _geometric_decay, SECTOR_GROWTH_MEDIANS
+from sanctum.models.montecarlo import run_montecarlo
+from sanctum.models.bayesian import compute_bayesian
+from sanctum.models.sensitivity import compute_sensitivity
+from sanctum.models.catalyst import compute_catalyst_score
+from sanctum.models.options import suggest_strategy
+from sanctum.scoring.composite import CompositeScorer, _upside_to_score, _compute_margin_trend, _combined_archetype
+from sanctum.scoring.filters import apply_filters
 
 
 # ─────────────────────────────────────────────────────────────────────────────

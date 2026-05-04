@@ -16,7 +16,7 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 
-from data.cache import SanctumDB
+from sanctum.data.cache import SanctumDB
 
 logger = logging.getLogger(__name__)
 
@@ -496,7 +496,7 @@ class DataFetcher:
 
         # ── News sentiment ──
         try:
-            from data.sentiment import process_news_data
+            from sanctum.data.sentiment import process_news_data
             stock.news_sentiment = process_news_data(news_raw, ticker)
         except Exception as e:
             logger.debug(f"{ticker}: news sentiment failed — {e}")
@@ -589,7 +589,7 @@ class DataFetcher:
 
         # ── Finviz Alpha Pipeline Scraper (Fallback/Supplement) ────────────────
         try:
-            from data.finviz_scraper import fetch_finviz_data
+            from sanctum.data.finviz_scraper import fetch_finviz_data
             fv = fetch_finviz_data(ticker)
             
             # Use Finviz as primary for Alpha Pipeline specific fields

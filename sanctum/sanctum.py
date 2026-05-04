@@ -22,14 +22,14 @@ from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich import box
 
-from data.cache import SanctumDB
-from data.fetcher import DataFetcher
-from data.watchlist import WatchlistManager
-from portfolio.manager import PortfolioManager
-from scoring.filters import apply_filters
-from scoring.composite import CompositeScorer
-from output.terminal import TerminalOutput, GOLD
-from output.tui import SanctumTUI
+from sanctum.data.cache import SanctumDB
+from sanctum.data.fetcher import DataFetcher
+from sanctum.data.watchlist import WatchlistManager
+from sanctum.portfolio.manager import PortfolioManager
+from sanctum.scoring.filters import apply_filters
+from sanctum.scoring.composite import CompositeScorer
+from sanctum.output.terminal import TerminalOutput, GOLD
+from sanctum.output.tui import SanctumTUI
 
 console = Console()
 
@@ -95,13 +95,13 @@ def get_tickers(config: dict, args: argparse.Namespace, db: SanctumDB) -> list[s
             sys.exit(1)
         return tickers
     elif source == "sp500":
-        from data.fetcher import fetch_sp500_tickers
+        from sanctum.data.fetcher import fetch_sp500_tickers
         return fetch_sp500_tickers()
     elif source == "nasdaq100":
-        from data.fetcher import fetch_nasdaq100_tickers
+        from sanctum.data.fetcher import fetch_nasdaq100_tickers
         return fetch_nasdaq100_tickers()
     elif source == "all_us":
-        from data.fetcher import fetch_all_us_tickers
+        from sanctum.data.fetcher import fetch_all_us_tickers
         return fetch_all_us_tickers()
     else:
         print(f"Error: unknown universe source '{source}'. Valid options: all_us, sp500, nasdaq100, custom, watchlist.")
@@ -180,7 +180,7 @@ def cmd_portfolio(args: argparse.Namespace, config: dict, db: SanctumDB) -> None
 
         output.print_portfolio(holdings, scored, [])
     elif args.action == "rebalance":
-        from portfolio.rebalance import suggest_rebalance
+        from sanctum.portfolio.rebalance import suggest_rebalance
         holdings_list = manager.list()
         if not holdings_list:
             console.print("[yellow]Portfolio is empty.[/yellow]")
@@ -226,7 +226,7 @@ def cmd_screen(args: argparse.Namespace, config: dict, db: SanctumDB) -> None:
 
     if hasattr(args, "export") and args.export == "pdf":
         try:
-            from output.pdf_report import PDFReport
+            from sanctum.output.pdf_report import PDFReport
             PDFReport(config).generate_screen(results, shortlisted)
         except ImportError:
             console.print("[red]Error: PDF export requires 'reportlab'.[/red]")
@@ -252,7 +252,7 @@ def cmd_analyze(args: argparse.Namespace, config: dict, db: SanctumDB) -> None:
 
     if hasattr(args, "export") and args.export == "pdf":
         try:
-            from output.pdf_report import PDFReport
+            from sanctum.output.pdf_report import PDFReport
             PDFReport(config).generate_analysis(result)
         except ImportError:
             console.print("[red]Error: PDF export requires 'reportlab'.[/red]")

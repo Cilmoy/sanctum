@@ -1,6 +1,6 @@
 import pytest
 from rich.console import Group
-from output.terminal import TerminalOutput
+from sanctum.output.terminal import TerminalOutput
 
 @pytest.fixture
 def sample_result():
