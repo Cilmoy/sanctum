@@ -1,103 +1,80 @@
-# SANCTUM LLC — Equity Screener & Analysis CLI
+# Sanctum Equity Screener
 
-A quantitative stock screening and analysis tool for the Sanctum investment club. It pulls financial data, runs a standardized valuation pipeline (WACC, DCF, Monte Carlo, Bayesian), and identifies high-conviction "Multi-Bagger" opportunities.
+Institutional-grade quantitative screening and analysis terminal for public equities. This tool implements a multi-stage valuation pipeline including WACC, DCF, Monte Carlo, and Bayesian sequential updating to identify fundamental mispricing and short-term catalyst velocity.
 
----
+## Installation
 
-## 🚀 One-Command Setup
+### Method 1: Homebrew (Recommended for macOS)
 
-**Requirements:** Python 3.10+ (macOS/Linux). No manual venv or pip steps required.
+```bash
+brew tap cilmoy/sanctum
+brew install sanctum
+```
 
-1.  **Clone the repo**
-2.  **Run setup:**
-    ```bash
-    ./cli_launcher.sh setup
-    ```
-3.  **Use the tool globally:**
-    ```bash
-    sanctum help
-    ```
-    *The setup command automatically creates a virtual environment, installs all dependencies, and creates a global 'sanctum' command in your PATH.*
+### Method 2: Manual Setup
 
----
+**Requirements:** Python 3.10+
 
-## 🛠 Command Dashboard
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/Cilmoy/sanctum.git
+   cd sanctum
+   ```
+2. Run the initialization script:
+   ```bash
+   ./cli_launcher.sh setup
+   ```
+3. Run the application:
+   ```bash
+   sanctum
+   ```
 
-### 1. The Watchlist (Persistent)
-Instead of typing tickers every time, save your "Universe of Interest."
+## Usage
+
+### Watchlist Management
+Maintain a persistent universe of interest across sessions.
 ```bash
 sanctum watchlist add TSM
-sanctum watchlist add GOOG
 sanctum watchlist list
 ```
 
-### 2. Screening
-Rank your watchlist or a broad index.
+### Screening
+Screen the watchlist or a broad index using fundamental and technical filters.
 ```bash
-# Screens your saved watchlist by default
+# Screen saved watchlist
 sanctum screen
 
-# Screen the S&P 500
+# Screen S&P 500 constituents
 sanctum screen --set universe.source=sp500
-
-# Quick screen for specific tickers
-sanctum screen --tickers NVDA,AVGO,ARM
 ```
 
-### 3. Deep-Dive Analysis
-Full mathematical derivation for a single stock.
+### Deep-Dive Analysis
+Perform detailed mathematical analysis of a single ticker, including sensitivity analysis and options strategy recommendations.
 ```bash
-sanctum analyze TSM
+sanctum analyze NVDA
 ```
-*Use the `--debug` flag to see the Bayesian update trace if the score looks unusual.*
 
-### 4. Portfolio Tracking
-Manage the club's actual positions and get rebalancing suggestions.
+### Portfolio Management
+Track actual holdings and generate rebalancing suggestions based on live conviction scores.
 ```bash
-# Add a position (Ticker, Shares, Avg Cost)
-sanctum portfolio add TSM 50 145.20
-
-# Review portfolio and get rebalance advice
+sanctum portfolio add AAPL 10 185.50
 sanctum portfolio rebalance
 ```
 
----
+## Methodology
 
-## 🧠 The "Value & Velocity" Score
+### The "Value & Velocity" Model
+Stocks are evaluated on two primary dimensions:
+- **Fundamental Value:** Intrinsic value derived from a 2-stage Free Cash Flow model with Monte Carlo uncertainty simulation.
+- **Catalyst Velocity:** Short-term momentum signals including insider trading clusters, earnings acceleration, and volatility squeeze detection.
 
-Every stock gets a **conviction score (0–100)**. It identifies the intersection of:
-- **Value:** Deep fundamental upside in the DCF/Monte Carlo models.
-- **Velocity:** High catalyst scores (earnings beats, short interest, insider buying).
+### Trade Archetypes
+- **Asymmetric Convexity:** Deep fundamental floor combined with high-velocity timing.
+- **Convergence:** Strategic alignment between long-term value and short-term momentum.
 
-### Trade Archetypes:
-- **CONVERGENCE (10x Potential):** Extreme fundamental mispricing + violent catalyst momentum.
-- **STRONG BUY:** Value and momentum are aligned.
-- **MOMENTUM SETUP:** Driven by catalysts; size small, tight stop.
+## Configuration
+Model assumptions and universe parameters are managed in `sanctum/config.yaml`. All settings can be overridden at runtime using the `--set` flag.
 
----
-
-## ⚙️ Configuration
-All parameters live in `sanctum/config.yaml`. 
-
-**On-the-fly overrides:**
-```bash
-sanctum screen --set scoring.shortlist_threshold=75
-sanctum analyze NVDA --set dcf.terminal_growth_rate=0.04
-```
-
----
-
-## 📂 File Structure
-- `sanctum/config.yaml`: The "Brain" (all model assumptions).
-- `sanctum/sanctum.py`: The "Cockpit" (CLI entry point).
-- `sanctum/models/`: The "Engine" (DCF, WACC, Bayesian, etc.).
-- `sanctum/data/`: The "Fuel" (yfinance fetcher and SQLite DB).
-
----
-
-## 🗺 Roadmap
-- **Phase 1 (Complete):** Core Quantitative Pipeline & Persistent CLI.
-- **Phase 2 (Complete):** Interactive TUI (Terminal User Interface) & "One-Command" setup.
-- **Phase 3 (Complete):** **Alpha Pipeline** — Convexity math, Finviz scraping, and tactical execution.
-- **Phase 4 (Next):** **Institutional Risk & Sizing** — Implementing the Kelly Optimizer and Capital Extraction engine.
-- **Phase 5:** **PDF Export Engine** — Branded, professional research reports for club meetings.
+## Project Roadmap
+- **Phase 4:** Institutional Risk & Sizing (Kelly Criterion integration).
+- **Phase 5:** PDF Research Report Engine.
