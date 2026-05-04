@@ -67,8 +67,8 @@ fi
 # 2. Activate environment
 source "$VENV_DIR/bin/activate"
 
-# 3. Add sanctum to PYTHONPATH so internal imports work
-export PYTHONPATH="$SCRIPT_DIR/sanctum:$PYTHONPATH"
+# 3. Add project root to PYTHONPATH so absolute package imports work
+export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
 
 # 4. Execute the main program with all passed arguments
 exec python3 "$SCRIPT_DIR/sanctum/sanctum.py" "$@"
